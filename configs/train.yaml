@@ -1,0 +1,22 @@
+# Training / evaluation settings shared by all models.
+seed: 0
+epochs: 15
+batch_size: 256
+eval_batch_size: 1024
+lr: 0.001
+weight_decay: 0.0001
+grad_clip: 1.0
+loss: bce                # bce | focal
+focal_gamma: 2.0
+sampler: none            # none | balanced  (balanced = oversample minority INSIDE the training loop only)
+max_steps_per_epoch: 1500   # 0 = full pass over the training split each epoch
+max_train_examples: 0       # 0 = all; >0 = deterministic subsample (quick runs)
+monitor: val_pr_auc      # val_pr_auc | val_roc_auc | val_loss | val_recall_at_fpr1
+patience: 5
+min_delta: 0.0005
+lr_schedule: plateau     # plateau | none
+num_threads: 0           # 0 = torch default
+# evaluation
+fpr_targets: [0.01, 0.05]   # window-level false-positive-rate operating points, chosen on VAL
+prefix_lengths: [4, 8, 16, 32]   # packets seen before predicting (detection-delay study)
+capture_alert_fracs: [0.1, 0.25, 0.5]

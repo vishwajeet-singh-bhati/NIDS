@@ -1,0 +1,17 @@
+# ML Datasets, Outputs, and Logs
+data/
+results/
+runs/
+artifacts/
+TEST_RESULTS.txt
+
+# Python & Android Caches
+__pycache__/
+*.py[cod]
+venv/
+.env
+android/.gradle/
+android/build/
+android/local.properties
+.idea/
+nids/

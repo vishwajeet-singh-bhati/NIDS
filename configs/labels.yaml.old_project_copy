@@ -1,0 +1,31 @@
+categories: [benign, malicious_associated, confirmed_attack, unknown]
+
+binary_target:
+  benign: 0
+  malicious_associated: 1
+  confirmed_attack: 1
+  unknown: -1
+
+default_rule:
+  mapped_label: unknown
+  label_source: no_rule_matched
+  reliability: none
+
+rules:
+  - name: cic_andmal2017_benign_directory
+    enabled: true
+    path_regex: '(?i)^Benign/(?P<category>\d{4})/\d{2}_\d{2}_\d{4}-be-\d{4}(?:\d{4}-apps|-OK-\d+|-OK)?-(?P<app>.+)\.pcap$'
+    original_label: benign
+    mapped_label: benign
+    label_source: directory_and_filename
+    reliability: weak_directory_name
+
+  - name: cic_andmal2017_malware_directory
+    enabled: true
+    path_regex: '(?i)^(?P<category>Adware|Ransomware|Scareware|SMSMalware)/(?P<family>[^/]+)/[^/]+\.pcap$'
+    original_label: from_directory
+    mapped_label: malicious_associated
+    label_source: directory_name
+    reliability: weak_directory_name
+
+override_csv: null

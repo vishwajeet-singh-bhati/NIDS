@@ -1,0 +1,45 @@
+# Model hyper-parameters. Compact on purpose (target: on-device INT8 later).
+# Input sizes (window length, #meta channels, payload bytes, #aggregate features) come from the
+# dataset's feature spec, never from here.
+
+# Model A: MLP baseline on the 22 aggregate window features.
+mlp:
+  hidden: [64, 32]
+  dropout: 0.1
+
+# Model B: metadata-only 1D CNN over the packet sequence (12 meta channels + 1 mask channel).
+cnn_meta:
+  channels: [32, 64]
+  kernel_size: 3
+  hidden: 32
+  dropout: 0.1
+  norm: batch            # batch | none
+
+# Model C (optional experiment): payload bytes + metadata.
+cnn_payload:
+  byte_embed_dim: 8
+  byte_channels: [16, 32]
+  byte_kernel: 5
+  byte_stride: 2
+  packet_embed_dim: 16   # size of the per-packet vector produced by the payload branch
+  channels: [32, 64]
+  kernel_size: 3
+  hidden: 32
+  dropout: 0.1
+  norm: batch
+
+# Model D: Multi-modal Dilated 1D-ResNet (meta + payload + agg) with INT8 QAT.
+hybrid_resnet:
+  byte_embed_dim: 16
+  byte_channels: [32, 64, 96]
+  byte_kernel: 5
+  byte_stride: 2
+  packet_embed_dim: 48
+  channels: [64, 96, 128, 128]
+  dilations: [1, 2, 4, 8]
+  kernel_size: 3
+  agg_hidden: 64
+  head_hidden: 128
+  dropout: 0.2
+  qat: true
+  qat_start_epoch: 6

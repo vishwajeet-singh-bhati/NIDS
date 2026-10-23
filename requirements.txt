@@ -1,0 +1,9 @@
+# Tested with Python 3.12/3.13. Versions are minimums the code was tested against.
+numpy>=2.0,<3
+pandas>=2.2
+PyYAML>=6.0
+scapy>=2.5,<3        # only its raw pcap/pcapng READERS and the synthetic test PCAPs
+scikit-learn>=1.4    # ROC/PR metrics
+torch>=2.2           # Phase 5-6 training (CPU build is enough; see README for the CPU-only wheel)
+tabulate>=0.9        # pandas.to_markdown in scripts/aggregate_results.py
+pytest>=8.0

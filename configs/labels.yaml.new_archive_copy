@@ -1,0 +1,65 @@
+# Label rules for CIC-AndMal2017, written from the directory/file names seen in the audit you sent
+# (Adware/Ransomware/Scareware/SMSMalware/<family>/<date>-<cat>-<family>-<av vendor>-<md5>.pcap and
+# Benign/<year>/<date>-be-<year>-[OK-<n>-]<package>.pcap).
+#
+# Semantics (do not over-read these):
+#   * `malicious_associated` = "this capture was recorded while that malware sample was installed
+#     and running". It does NOT mean every flow in it is malicious. Background traffic (DNS to the
+#     gateway, connectivity checks, Google services) is inside these captures too => label noise.
+#   * `benign` = capture of a Google-Play app (directory name `Benign`). It is only as verified as
+#     the dataset's own collection process; nothing here re-verifies it.
+#   * Nothing maps to `confirmed_attack`. No C&C ground truth exists in this dataset's labels.
+#
+# Captured named groups: app, family, category, date, subset  -> manifest columns
+#   app    benign: Android package name;  malware: APK md5 (one capture per APK in this download)
+#   date   MM_DD_YYYY from the file name, normalised to YYYY-MM-DD
+#   subset benign sub-directory (2015/2016/2017 = app release-year bucket)
+# First matching rule wins. Rules are verified against tests/fixtures/andmal2017_paths_sample.txt.
+
+categories: [benign, malicious_associated, confirmed_attack, unknown]
+
+binary_target:
+  benign: 0
+  malicious_associated: 1
+  confirmed_attack: 1
+  unknown: -1
+
+default_rule:
+  mapped_label: unknown
+  label_source: no_rule_matched
+  reliability: none
+
+rules:
+  - name: cic_andmal2017_benign_directory
+    enabled: true
+    path_regex: '(?i)(^|/)Benign/(?P<subset>[^/]+)/(?P<date>\d{2}_\d{2}_\d{4})-be-[^-/]+-(?:OK-\d+-)?(?P<app>[^/]+)\.pcap$'
+    original_label: benign
+    mapped_label: benign
+    label_source: directory_name
+    reliability: weak_directory_name
+
+  - name: cic_andmal2017_benign_directory_fallback   # naming variant not covered above: no app_id
+    enabled: true
+    path_regex: '(?i)(^|/)Benign/(?P<subset>[^/]+)/'
+    original_label: benign
+    mapped_label: benign
+    label_source: directory_name
+    reliability: weak_directory_name
+
+  - name: cic_andmal2017_malware_directory
+    enabled: true
+    path_regex: '(?i)(^|/)(?P<category>Adware|Ransomware|Scareware|SMSMalware)/(?P<family>[^/]+)/(?P<date>\d{2}_\d{2}_\d{4})-[^/]*?-(?P<app>[0-9a-f]{32})\.pcap$'
+    original_label: from_directory      # -> the family directory name
+    mapped_label: malicious_associated
+    label_source: directory_name
+    reliability: weak_directory_name
+
+  - name: cic_andmal2017_malware_directory_fallback  # no md5 in the file name: no app_id
+    enabled: true
+    path_regex: '(?i)(^|/)(?P<category>Adware|Ransomware|Scareware|SMSMalware)/(?P<family>[^/]+)/'
+    original_label: from_directory
+    mapped_label: malicious_associated
+    label_source: directory_name
+    reliability: weak_directory_name
+
+override_csv: null

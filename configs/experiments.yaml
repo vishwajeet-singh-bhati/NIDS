@@ -1,0 +1,19 @@
+# Planned experiments (the aggregator marks any row without a finished run as "pending").
+# `dataset` is matched as a SUBSTRING of the consolidated dataset directory name
+# (e.g. data/datasets/full_group_random_s0 matches "group_random"). `window` rows are filled only if
+# you built and consolidated a dataset with that window size and put "w16"/"w64" in its name.
+experiments:
+  - {id: E1a, question: "Model A (MLP) vs random capture-level split",          dataset: group_random,   model: mlp}
+  - {id: E1b, question: "Model B (metadata CNN) vs random capture-level split", dataset: group_random,   model: cnn_meta}
+  - {id: E1c, question: "Model C (payload+metadata CNN), optional",             dataset: group_random,   model: cnn_payload}
+  - {id: E2a, question: "Unseen malware families: MLP",                         dataset: family_holdout, model: mlp}
+  - {id: E2b, question: "Unseen malware families: metadata CNN",                dataset: family_holdout, model: cnn_meta}
+  - {id: E2c, question: "Unseen malware families: payload+metadata CNN",        dataset: family_holdout, model: cnn_payload}
+  - {id: E3a, question: "Unseen families, local infrastructure windows removed: MLP", dataset: family_holdout_noinfra, model: mlp}
+  - {id: E3b, question: "Unseen families, local infrastructure windows removed: metadata CNN", dataset: family_holdout_noinfra, model: cnn_meta}
+  - {id: E4a, question: "Window 16 packets: metadata CNN",                      dataset: w16,            model: cnn_meta}
+  - {id: E4b, question: "Window 64 packets: metadata CNN",                      dataset: w64,            model: cnn_meta}
+  - {id: E1d, question: "Model D (Hybrid Dilated ResNet + QAT) vs random split", dataset: group_random, model: hybrid_resnet}
+  - {id: E2d, question: "Unseen malware families: Hybrid Dilated ResNet + QAT", dataset: family_holdout, model: hybrid_resnet}
+  - {id: E3c, question: "Unseen families, local infra removed: payload+metadata CNN", dataset: family_holdout_noinfra, model: cnn_payload}
+  - {id: E3d, question: "Unseen families, local infra removed: Hybrid Dilated ResNet + QAT", dataset: family_holdout_noinfra, model: hybrid_resnet}

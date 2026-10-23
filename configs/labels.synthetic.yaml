@@ -1,0 +1,21 @@
+# Labels for the SYNTHETIC smoke-test dataset only (scripts/make_synthetic_dataset.py).
+# Not applicable to any real dataset.
+categories: [benign, malicious_associated, confirmed_attack, unknown]
+binary_target: {benign: 0, malicious_associated: 1, confirmed_attack: 1, unknown: -1}
+default_rule: {mapped_label: unknown, label_source: no_rule_matched, reliability: none}
+rules:
+  - name: synthetic_benign
+    enabled: true
+    path_regex: '(^|/)benign/(?P<app>[^/]+)/'
+    original_label: synthetic_benign
+    mapped_label: benign
+    label_source: synthetic_directory
+    reliability: synthetic
+  - name: synthetic_malware_like
+    enabled: true
+    path_regex: '(^|/)malware_like/(?P<family>[^/]+)/'
+    original_label: synthetic_malware_like
+    mapped_label: malicious_associated
+    label_source: synthetic_directory
+    reliability: synthetic
+override_csv: null

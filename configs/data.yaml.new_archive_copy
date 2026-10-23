@@ -1,0 +1,38 @@
+# Single source of truth for preprocessing. Every value here is recorded in each
+# processed shard so that training and Android inference can reuse it unchanged.
+# Bump feature_spec_version if ANY feature-related value changes meaning.
+
+feature_spec_version: "1.1"   # 1.1: monotone window clock for rel_time/log_iat (see feature_extraction.py)
+
+dataset:
+  name: cic_andmal2017           # free-text tag stored in the manifest
+  raw_root: data/raw/CIC-AndMal2017
+  processed_root: data/processed/cic_andmal2017
+  manifest_path: data/manifests/cic_andmal2017_manifest.csv
+  pcap_extensions: [".pcap", ".pcapng", ".cap"]
+  # Labeling rules live in a separate file so they can be reviewed on their own.
+  label_config: configs/labels.yaml
+
+parse:
+  dns_ports: [53, 5353]          # UDP/TCP traffic to/from these ports -> category DNS
+  payload_bytes_kept: 128        # max transport-payload bytes retained per packet (B)
+  max_packets_per_capture: 0     # 0 = no limit; useful for quick trials
+
+flow:
+  tcp_idle_timeout_s: 120.0      # idle gap that terminates a TCP flow
+  udp_idle_timeout_s: 60.0
+  other_idle_timeout_s: 60.0
+  max_flow_duration_s: 600.0     # long flows are split; the continuation is marked
+  tcp_time_wait_s: 5.0           # after FIN/FIN or RST, late packets still join the old flow
+  max_packets_per_flow: 1500     # memory guard (must be >= (max_windows_per_flow-1)*stride+window_size); excess counted, not stored
+  drop_tcp_retransmissions: true # retransmitted payload segments are dropped from sequences
+  expire_check_interval_s: 1.0   # how often (capture time) idle flows are swept
+
+sequence:
+  window_size: 32                # W: 16 / 32 / 64 are the supported experiment values
+  stride: 32                     # == window_size -> non-overlapping; smaller -> sliding windows
+  min_packets: 2                 # flows/windows with fewer real packets are skipped (and counted)
+  min_tail_packets: 8            # a trailing window is only emitted if >= this many NEW packets remain
+  max_windows_per_flow: 20       # stops one huge flow dominating the dataset
+  include_payload: true          # false -> payload arrays are not written at all
+  iat_log_unit_ms: true          # log1p(inter-arrival time in milliseconds)
