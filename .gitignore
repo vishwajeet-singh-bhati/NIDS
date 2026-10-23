@@ -1,8 +1,8 @@
 # ML Datasets, Outputs, and Logs
-data/
-results/
-runs/
-artifacts/
+/data/
+/results/
+/runs/
+/artifacts/
 TEST_RESULTS.txt
 
 # Python & Android Caches

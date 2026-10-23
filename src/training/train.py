@@ -49,7 +49,7 @@ log = logging.getLogger("train")
 DEFAULT_TRAIN_CFG: Dict[str, Any] = {
     "seed": 0, "epochs": 15, "batch_size": 256, "eval_batch_size": 1024, "lr": 1e-3, "weight_decay": 1e-4,
     "grad_clip": 1.0, "loss": "bce", "focal_gamma": 2.0, "sampler": "none", "max_steps_per_epoch": 1500,
-    "max_train_examples": 0, "monitor": "val_pr_auc", "patience": 4, "min_delta": 5e-4, "lr_schedule": "plateau",
+    "max_train_examples": 0, "prefix_aug": 0.0, "init_from": "", "monitor": "val_pr_auc", "patience": 4, "min_delta": 5e-4, "lr_schedule": "plateau",
     "num_threads": 0, "fpr_targets": [0.01, 0.05], "prefix_lengths": [4, 8, 16, 32],
     "capture_alert_fracs": [0.1, 0.25, 0.5],
 }
@@ -93,6 +93,9 @@ def train(dataset_dir: str, model_name: str, run_dir: str | Path, train_cfg: Dic
     n_pos, n_neg = int((y_tr == 1).sum()), int((y_tr == 0).sum())
     pos_weight = 1.0 if cfg["sampler"] == "balanced" else n_neg / max(n_pos, 1)
     loss_fn = make_loss(cfg["loss"], pos_weight, float(cfg["focal_gamma"]))
+    if cfg["init_from"]:
+        from src.training.pretrain import load_pretrained_encoder
+        log.info("initialising encoder from %s: %s", cfg["init_from"], load_pretrained_encoder(model, cfg["init_from"]))
     kinds = set(model.inputs)
     opt = torch.optim.AdamW(model.parameters(), lr=float(cfg["lr"]), weight_decay=float(cfg["weight_decay"]))
     mode = MONITORS[cfg["monitor"]]
@@ -124,7 +127,8 @@ def train(dataset_dir: str, model_name: str, run_dir: str | Path, train_cfg: Dic
         rng = np.random.default_rng(int(cfg["seed"]) * 1000 + epoch)
         losses = []
         for b in train_d.iter_train_batches(int(cfg["batch_size"]), kinds, rng, cfg["sampler"],
-                                            int(cfg["max_steps_per_epoch"])):
+                                            int(cfg["max_steps_per_epoch"]),
+                                            float(cfg["prefix_aug"]), cfg["prefix_lengths"]):
             b = {k: v.to(device) for k, v in b.items()}
             opt.zero_grad(set_to_none=True)
             loss = loss_fn(model(b), b["y"])
@@ -135,8 +139,14 @@ def train(dataset_dir: str, model_name: str, run_dir: str | Path, train_cfg: Dic
                 torch.nn.utils.clip_grad_norm_(model.parameters(), float(cfg["grad_clip"]))
             opt.step()
             losses.append(float(loss.item()))
-        s_val = predict(model, val_d, int(cfg["eval_batch_size"]), device)
-        vm = _val_metrics(y_val, s_val)
+        if float(cfg["prefix_aug"]) > 0:
+            # model selection must reflect what the streaming detector sees: pool val windows seen at each prefix length
+            ks = sorted({min(int(k), val_d.window_size) for k in cfg["prefix_lengths"]} | {val_d.window_size})
+            s_val = np.concatenate([predict(model, val_d, int(cfg["eval_batch_size"]), device, k) for k in ks])
+            vm = _val_metrics(np.tile(y_val, len(ks)), s_val)
+        else:
+            s_val = predict(model, val_d, int(cfg["eval_batch_size"]), device)
+            vm = _val_metrics(y_val, s_val)
         row = {"epoch": epoch, "train_loss": float(np.mean(losses)) if losses else float("nan"), **vm,
                "lr": opt.param_groups[0]["lr"], "seconds": round(time.time() - t0, 1)}
         history.append(row)
@@ -181,6 +191,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument("--loss", choices=["bce", "focal"], default=None)
     ap.add_argument("--max-steps-per-epoch", type=int, default=None)
     ap.add_argument("--max-train-examples", type=int, default=None)
+    ap.add_argument("--prefix-aug", type=float, default=None, help="prob. of training on a random packet prefix")
+    ap.add_argument("--init-from", default=None, help="pretrained encoder checkpoint (src.training.pretrain)")
     ap.add_argument("--monitor", choices=sorted(MONITORS), default=None)
     ap.add_argument("--device", default="auto")
     ap.add_argument("--no-eval", action="store_true")
@@ -188,7 +200,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     a = ap.parse_args(argv)
     setup_logging(a.log_level)
     cfg = yaml.safe_load(Path(a.train_config).read_text()) if Path(a.train_config).is_file() else {}
-    for k in ("seed", "epochs", "batch_size", "lr", "sampler", "loss", "max_steps_per_epoch", "max_train_examples", "monitor"):
+    for k in ("seed", "epochs", "batch_size", "lr", "sampler", "loss", "max_steps_per_epoch", "max_train_examples", "monitor", "prefix_aug", "init_from"):
         v = getattr(a, k)
         if v is not None:
             cfg[k] = v

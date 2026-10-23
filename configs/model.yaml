@@ -43,3 +43,16 @@ hybrid_resnet:
   dropout: 0.2
   qat: true
   qat_start_epoch: 6
+
+# Model E: PacketBERT - compact BERT-style encoder (pretrain with src.training.pretrain, fine-tune with QAT).
+# Set use_payload: true to add the payload-byte branch (slower; payload is mostly ciphertext).
+packet_bert:
+  d_model: 96
+  heads: 4
+  layers: 3
+  ff_mult: 2
+  dropout: 0.1
+  use_payload: false
+  head_hidden: 64
+  qat: true
+  qat_start_epoch: 6

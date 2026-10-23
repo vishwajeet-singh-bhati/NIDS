@@ -27,6 +27,24 @@ from src.data.feature_extraction import aggregate_features
 from src.data.normalization import Normalizer
 
 
+def tensors_from_arrays(meta: np.ndarray, mask: np.ndarray, payload: Optional[np.ndarray],
+                        pvl: Optional[np.ndarray], norm: Normalizer, kinds: Set[str]) -> Dict[str, torch.Tensor]:
+    """Raw window arrays -> model input tensors. Shared by offline training/eval (SplitData.batch) and the
+    real-time engine (src.stream), so both feed the model byte-identical inputs (no train/serve skew).
+    meta [N,W,12] float32, mask [N,W] uint8 (padding rows already zero), payload [N,W,Bn] uint8, pvl [N,W]."""
+    out: Dict[str, torch.Tensor] = {"mask": torch.from_numpy(mask.astype(np.float32))}
+    if "meta" in kinds:
+        out["meta"] = torch.from_numpy(norm.transform_meta(meta, mask))
+    if "agg" in kinds:
+        out["agg"] = torch.from_numpy(norm.transform_aggregate(aggregate_features(meta, mask)))
+    if "payload" in kinds:
+        pay, pv = payload.astype(np.int64), pvl.astype(np.int64)
+        valid = np.arange(pay.shape[2])[None, None, :] < pv[:, :, None]
+        valid &= (mask[:, :, None] > 0)
+        out["payload"] = torch.from_numpy(np.where(valid, pay + 1, 0))
+    return out
+
+
 class SplitData:
     def __init__(self, dataset_dir: str, split: str, normalizer: Normalizer, mmap: bool = True,
                  max_examples: int = 0, seed: int = 0):
@@ -68,7 +86,9 @@ class SplitData:
         return int(self.payload.shape[2]) if self.payload is not None else 0
 
     # ----------------------------------------------------------------------------- batches
-    def batch(self, rows: np.ndarray, kinds: Set[str], prefix_k: Optional[int] = None) -> Dict[str, torch.Tensor]:
+    def batch(self, rows: np.ndarray, kinds: Set[str], prefix_k=None) -> Dict[str, torch.Tensor]:
+        """`prefix_k`: None (full window), an int (same prefix for all rows) or an int array [B]
+        (a different prefix per row; used by prefix-augmented training)."""
         rows = np.asarray(rows)
         order = np.argsort(rows, kind="stable")           # sorted reads are friendlier to memmaps
         inv = np.empty_like(order)
@@ -77,24 +97,20 @@ class SplitData:
         meta = np.asarray(self.meta[srt])[inv]
         mask = np.asarray(self.mask_raw[srt])[inv].copy()
         if prefix_k is not None:
-            mask[:, prefix_k:] = 0
             meta = meta.copy()
-            meta[:, prefix_k:] = 0
-        out: Dict[str, torch.Tensor] = {"mask": torch.from_numpy(mask.astype(np.float32)),
-                                        "y": torch.from_numpy(self.y_all[rows].astype(np.float32)),
-                                        "idx": torch.from_numpy(rows.astype(np.int64))}
-        if "meta" in kinds:
-            out["meta"] = torch.from_numpy(self.norm.transform_meta(meta, mask))
-        if "agg" in kinds:
-            out["agg"] = torch.from_numpy(self.norm.transform_aggregate(aggregate_features(meta, mask)))
+            k = np.broadcast_to(np.asarray(prefix_k, dtype=np.int64), (len(rows),))
+            cut = np.arange(mask.shape[1])[None, :] >= k[:, None]          # [B,W] True = hidden
+            mask[cut] = 0
+            meta[cut] = 0
+        pay = pvl = None
         if "payload" in kinds:
             if self.payload is None or self.pvl is None:
                 raise ValueError("this dataset was consolidated without payload arrays (--no-payload)")
-            pay = np.asarray(self.payload[srt])[inv].astype(np.int64)
-            pvl = np.asarray(self.pvl[srt])[inv].astype(np.int64)
-            valid = np.arange(pay.shape[2])[None, None, :] < pvl[:, :, None]
-            valid &= (mask[:, :, None] > 0)
-            out["payload"] = torch.from_numpy(np.where(valid, pay + 1, 0))
+            pay = np.asarray(self.payload[srt])[inv]
+            pvl = np.asarray(self.pvl[srt])[inv]
+        out = tensors_from_arrays(meta, mask, pay, pvl, self.norm, kinds)
+        out["y"] = torch.from_numpy(self.y_all[rows].astype(np.float32))
+        out["idx"] = torch.from_numpy(rows.astype(np.int64))
         return out
 
     def iter_eval_batches(self, batch_size: int, kinds: Set[str], prefix_k: Optional[int] = None
@@ -103,7 +119,11 @@ class SplitData:
             yield self.batch(self.sel[i:i + batch_size], kinds, prefix_k)
 
     def iter_train_batches(self, batch_size: int, kinds: Set[str], rng: np.random.Generator,
-                           sampler: str = "none", max_steps: int = 0) -> Iterator[Dict[str, torch.Tensor]]:
+                           sampler: str = "none", max_steps: int = 0, prefix_aug: float = 0.0,
+                           prefix_choices: Sequence[int] = (4, 8, 16, 32)) -> Iterator[Dict[str, torch.Tensor]]:
+        """`prefix_aug` = probability that an example is shown as a random packet PREFIX (a value from
+        `prefix_choices`, capped at the window size) instead of the full window. That is what the
+        real-time detector sees: it decides after 8, 16, 32 packets, not only on complete windows."""
         if sampler == "balanced":
             y = self.y_all[self.sel]
             n_pos, n_neg = max(int((y == 1).sum()), 1), max(int((y == 0).sum()), 1)
@@ -119,7 +139,11 @@ class SplitData:
             rows = order[i:i + batch_size]
             if len(rows) < 2:        # BatchNorm needs > 1 sample
                 break
-            yield self.batch(rows, kinds)
+            pk = None
+            if prefix_aug > 0:
+                ch = np.minimum(np.asarray(prefix_choices, dtype=np.int64), self.window_size)
+                pk = np.where(rng.random(len(rows)) < prefix_aug, rng.choice(ch, size=len(rows)), self.window_size)
+            yield self.batch(rows, kinds, pk)
             steps += 1
             if max_steps and steps >= max_steps:
                 break

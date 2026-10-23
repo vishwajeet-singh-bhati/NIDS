@@ -28,7 +28,7 @@ def test_forward_shape_and_param_budget(name):
     out = m(fake_batch())
     assert out.shape == (6,) and torch.isfinite(out).all()
     n = count_parameters(m)["total"]
-    assert n < {"mlp": 5_000, "cnn_meta": 30_000, "cnn_payload": 60_000, "hybrid_resnet": 500_000}[name], n   # compact on purpose
+    assert n < {"mlp": 5_000, "cnn_meta": 30_000, "cnn_payload": 60_000, "hybrid_resnet": 500_000, "packet_bert": 500_000}[name], n   # compact on purpose
     assert "total parameters" in model_summary(m)
 
 
