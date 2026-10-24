@@ -39,6 +39,7 @@ import pandas as pd
 
 from src.data.flow_tags import add_flow_tags
 from src.stream.engine import StreamConfig, StreamDetector
+from src.stream.device_rule import BurstParams, alarm_times
 from src.stream.policy import PolicyParams, first_alert
 from src.utils import metrics as M
 from src.utils.logging_utils import setup_logging
@@ -168,6 +169,58 @@ def choose_threshold(val_flows: pd.DataFrame, params: PolicyParams, target_fpr: 
     return {"threshold": best[1], "val": best[2], "sweep": rows}
 
 
+
+# --------------------------------------------------------------------------------------- device-level rule
+GRID_T = (30.0, 60.0, 300.0)
+GRID_N = (1, 3, 5, 10, 20, 50)
+
+
+def _device_eval(alert_times: Dict[str, List[float]], caps: pd.DataFrame, cap_stats: pd.DataFrame, bp: BurstParams) -> Dict[str, Any]:
+    dur = cap_stats.set_index("capture_id")["duration_s"].to_dict()
+    y, flag, n_alarm, first = [], [], [], []
+    for r in caps.itertuples():
+        al = alarm_times(alert_times.get(r.capture_id, []), bp)
+        y.append(int(r.binary_label))
+        flag.append(int(len(al) > 0))
+        n_alarm.append(len(al))
+        first.append(al[0] if al else None)
+    y, flag, n_alarm = np.array(y), np.array(flag), np.array(n_alarm)
+    tp, fp = int(((y == 1) & (flag == 1)).sum()), int(((y == 0) & (flag == 1)).sum())
+    fn, tn = int(((y == 1) & (flag == 0)).sum()), int(((y == 0) & (flag == 0)).sum())
+    d = lambda a, b: float(a / b) if b else float("nan")  # noqa: E731
+    prec, rec = d(tp, tp + fp), d(tp, tp + fn)
+    ben_h = sum(dur.get(r.capture_id, 0.0) for r in caps.itertuples() if r.binary_label == 0) / 3600.0
+    return {"window_s": bp.window_s, "min_alerts": bp.min_alerts, "n_captures": int(len(y)), "tp": tp, "fp": fp, "fn": fn, "tn": tn,
+            "accuracy": d(tp + tn, len(y)), "precision": prec, "recall": rec,
+            "f1": d(2 * prec * rec, prec + rec) if prec == prec and rec == rec else float("nan"),
+            "benign_capture_false_alarm_rate": d(fp, fp + tn),
+            "alarms_per_benign_hour": float(n_alarm[y == 0].sum() / ben_h) if ben_h > 0 else float("nan")}
+
+
+def device_level(replay: Dict[str, Dict[str, pd.DataFrame]], p: PolicyParams, test_split: str, target_fa: float = 0.05,
+                 grid_t: Sequence[float] = GRID_T, grid_n: Sequence[int] = GRID_N) -> Dict[str, Any]:
+    """Pick (T, N) on VAL captures, apply unchanged to TEST. A capture is one device session."""
+    times: Dict[str, Dict[str, List[float]]] = {}
+    for sp in ("val", test_split):
+        a = apply_policy(replay[sp]["flows"], p)
+        a = a[a["alert"]]
+        t = (a["flow_start_ts"] + a["delay_s"]).to_numpy()
+        times[sp] = {}
+        for cid, tt in zip(a["capture_id"], t):
+            times[sp].setdefault(cid, []).append(float(tt))
+    grid = [_device_eval(times["val"], replay["val"]["caps"], replay["val"]["captures"], BurstParams(T, N)) for T in grid_t for N in grid_n]
+    ok = [g for g in grid if g["benign_capture_false_alarm_rate"] <= target_fa and g["recall"] == g["recall"]]
+    if ok:
+        best = max(ok, key=lambda g: (g["recall"], -g["benign_capture_false_alarm_rate"], g["min_alerts"], -g["window_s"]))
+        note = ""
+    else:
+        best = min(grid, key=lambda g: (g["benign_capture_false_alarm_rate"], -g["recall"]))
+        note = f"no rule reached val benign-capture false-alarm rate <= {target_fa}; using the lowest"
+    bp = BurstParams(best["window_s"], best["min_alerts"])
+    return {"target_benign_capture_false_alarm_rate": target_fa, "selected": {"window_s": bp.window_s, "min_alerts": bp.min_alerts},
+            "note": note, "val": best, test_split: _device_eval(times[test_split], replay[test_split]["caps"], replay[test_split]["captures"], bp),
+            "val_grid": grid}
+
 # --------------------------------------------------------------------------------------- report
 def capture_level(df: pd.DataFrame, caps: pd.DataFrame, cap_stats: pd.DataFrame) -> Dict[str, Any]:
     per = df.groupby("capture_id").agg(alerts=("alert", "sum"), flows=("alert", "size")).reset_index()
@@ -218,7 +271,8 @@ def split_report(flows: pd.DataFrame, caps: pd.DataFrame, cap_stats: pd.DataFram
 
 def run(run_dir: str, manifest: str, splits: str, raw_root: Optional[str], out_dir: str, target_fpr: float = 0.01,
         objective: str = "fpr", sc: Optional[StreamConfig] = None, device: str = "cpu", max_captures: int = 0,
-        capture_stride: int = 1, test_split: str = "test", data_config: str = "configs/data.yaml") -> Dict[str, Any]:
+        capture_stride: int = 1, test_split: str = "test", data_config: str = "configs/data.yaml",
+        device_fa: float = 0.05) -> Dict[str, Any]:
     sc = sc or StreamConfig()
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
@@ -245,6 +299,7 @@ def run(run_dir: str, manifest: str, splits: str, raw_root: Optional[str], out_d
                                       "val_at_threshold": ch["val"], "note": ch.get("note", "")}
     for sp in ("val", test_split):
         results[sp] = split_report(replay[sp]["flows"], replay[sp]["caps"], replay[sp]["captures"], p)
+    results["device_level"] = device_level(replay, p, test_split, target_fa=device_fa)
     (out / "stream_metrics.json").write_text(json.dumps(results, indent=2, default=lambda o: None if o != o else str(o)))
     (out / "stream_report.md").write_text(render_md(results, test_split))
     return results
@@ -278,6 +333,19 @@ def render_md(res: Dict[str, Any], test_split: str) -> str:
                      f"p90 {_f(t['p90_s'])} s / {_f(t['p90_packets'], 0)} packets. Decided on prefix: {t['decided_on_prefix']}")
         th = r["throughput"]
         L += [f"Throughput {_f(th['packets_per_s'], 0)} packets/s ({th['note']}).", ""]
+    dl = res.get("device_level")
+    if dl:
+        sel = dl["selected"]
+        L += [f"## Device-level alarm (>= {sel['min_alerts']} flow alerts within {sel['window_s']:g} s; rule chosen on val, "
+              f"max benign-capture false-alarm rate {dl['target_benign_capture_false_alarm_rate']})", "",
+              "| split | captures | accuracy | precision | recall | F1 | benign-capture FA | alarms / benign hour |", "|---|---|---|---|---|---|---|---|"]
+        for sp in ("val", test_split):
+            g = dl[sp]
+            L.append(f"| {sp} | {g['n_captures']} | {_f(g['accuracy'])} | {_f(g['precision'])} | {_f(g['recall'])} | {_f(g['f1'])} | "
+                     f"{_f(g['benign_capture_false_alarm_rate'])} | {_f(g['alarms_per_benign_hour'], 2)} |")
+        if dl.get("note"):
+            L.append("\n" + dl["note"])
+        L.append("")
     return "\n".join(L)
 
 
@@ -294,6 +362,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument("--min-hits", type=int, default=2)
     ap.add_argument("--ema-alpha", type=float, default=0.5)
     ap.add_argument("--hard-margin", type=float, default=3.0)
+    ap.add_argument("--device-fa", type=float, default=0.05, help="max benign-capture false-alarm rate on val for the device rule")
     ap.add_argument("--max-captures", type=int, default=0)
     ap.add_argument("--capture-stride", type=int, default=1)
     ap.add_argument("--device", default="cpu")
@@ -304,7 +373,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     sc = StreamConfig(checkpoints=tuple(a.checkpoints), min_hits=a.min_hits, ema_alpha=a.ema_alpha, hard_margin=a.hard_margin)
     try:
         res = run(a.run_dir, a.manifest, a.splits, a.raw_root, a.out or str(Path(a.run_dir) / "stream"), a.target_fpr,
-                  a.objective, sc, a.device, a.max_captures, a.capture_stride, data_config=a.data_config)
+                  a.objective, sc, a.device, a.max_captures, a.capture_stride, data_config=a.data_config, device_fa=a.device_fa)
     except (FileNotFoundError, ValueError) as exc:
         log.error("%s", exc)
         return 2

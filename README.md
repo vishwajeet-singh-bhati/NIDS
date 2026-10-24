@@ -2,7 +2,7 @@
 
 Status: **Phases 1–6 implemented, plus a real-time streaming pipeline (section 3a)** (repo, dataset audit, PCAP→flows→windows, labels, leakage-safe splits,
 normalisation, models, training, evaluation). **Phases 7–8 (INT8 quantisation, Android app) are not started.**
-Everything was validated on *synthetic* captures only (152 tests). **No real-data detection result is
+Everything was validated on *synthetic* captures only (157 tests). **No real-data detection result is
 claimed anywhere in this repo**; results appear only after you run it on CIC-AndMal2017.
 
 The first classifier is a **malware-associated traffic classifier trained on weak capture-level labels**.
@@ -22,7 +22,7 @@ src/training/  data  losses  train  pretrain  evaluate  report
 src/utils/     config  logging_utils  reproducibility  synthetic  metrics
 scripts/       run_phase34.py  run_phase56.py  run_realtime.py  make_demo_dataset.py  aggregate_results.py  diagnose_timestamps.py
                make_synthetic_dataset.py  run_phase2_smoke.sh  run_and_collect.py
-tests/         152 tests (pytest)
+tests/         157 tests (pytest)
 ```
 
 ## 2. Environment
@@ -68,12 +68,14 @@ Why: fixed 32-packet windows are only a *context cap*. A deployed detector must 
 | `src/models/packet_bert.py` | Compact BERT-style encoder (≈0.25M params, ReLU FFN, all Linear/Conv are INT8 fake-quant layers). Not `bert-base`: no text/traffic checkpoint transfers to this feature spec and 110M params is not an on-device model. |
 | `src/training/pretrain.py` | Label-free masked-packet-modelling on the TRAIN split only; reports reconstruction vs a zero baseline. |
 | QAT | `qat_start_epoch` switches on per-channel INT8 weight / per-tensor INT8 activation fake-quant with STE; metrics are measured with quantisation active. |
+| `src/stream/device_rule.py` | Device alarm: ≥N flow alerts within T seconds → one `device_alarm` event (the natural “flag this phone” decision). (T, N) is chosen on VAL captures (max recall at benign-capture false-alarm ≤ 5 %) and applied unchanged to TEST. |
 | `src/stream/replay_eval.py` | Pushes held-out PCAPs through the engine; threshold chosen on VAL captures (max recall at FPR ≤ 1 %), applied unchanged to TEST. Reports accuracy / precision / recall / F1 / FPR at **flow** and **capture** level, alerts per benign hour, time-to-detect (s, packets), throughput, per-family recall, and results with local-infrastructure flows removed. |
 
 Run (after `scripts/run_phase34.py` created `data/datasets/*`):
 
 ```bash
-python scripts/run_realtime.py --raw-root data/raw/CIC-AndMal2017 --with-hybrid     # -> artifacts/realtime_report.txt
+python scripts/run_realtime.py --raw-root data/raw/CIC-AndMal2017                   # hybrid_resnet + PacketBERT(payload), -> artifacts/realtime_report.txt
+python scripts/run_realtime.py --raw-root data/raw/CIC-AndMal2017 --ablations        # + from-scratch and metadata-only PacketBERT
 python scripts/run_realtime.py --raw-root data/raw/CIC-AndMal2017 --quick           # tiny budget, checks it runs
 
 # individual steps
@@ -85,6 +87,8 @@ sudo python -m src.stream.run --run-dir runs/<ds>/pb_pre_s0 --iface en0 --alerts
 ```
 
 No re-processing is needed: spec v1.1 shards/datasets built earlier are used as they are.
+
+First real-data findings (CIC-AndMal2017, held-out families): payload-reading models (hybrid ResNet, payload CNN) reach val ROC-AUC ≈ 0.75–0.78, metadata-only models ≈ 0.63–0.67. At the flow level the hybrid ResNet gives precision ≈ 0.98 / recall ≈ 0.27–0.30 at 1 % FPR; aggregating alerts per device (≥20 within 30 s) gave accuracy 0.97, precision 0.92, recall 0.96 on 107 test captures (23 malware, 6 families, weak labels) – small sample, not a production claim.
 
 What is NOT done yet: real INT8 export (TFLite/LiteRT/ExecuTorch) and the Android service; softmax/LayerNorm/residual adds are not fake-quantised, so an exported INT8 model must be re-validated; live capture was not exercised on a real interface in the test environment (replay and raw-frame decoding are tested); no real-data results exist yet.
 

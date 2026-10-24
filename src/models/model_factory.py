@@ -16,7 +16,7 @@ from src.models.hybrid_resnet import HybridResNet1D
 from src.models.packet_bert import PacketBERT
 from src.utils.config import N_META
 
-MODEL_NAMES = ("mlp", "cnn_meta", "cnn_payload", "hybrid_resnet", "packet_bert")
+MODEL_NAMES = ("mlp", "cnn_meta", "cnn_payload", "hybrid_resnet", "packet_bert", "packet_bert_pay")
 LABEL_MAPPING = {"0": "benign", "1": "malicious_associated"}
 
 
@@ -38,7 +38,7 @@ def build_model(name: str, cfg: Dict[str, Any]) -> nn.Module:
         return PayloadMetaCNN1D(N_META, **cfg)
     if name == "hybrid_resnet":
         return HybridResNet1D(N_META, len(AGG_FEATURE_NAMES), **cfg)
-    if name == "packet_bert":
+    if name in ("packet_bert", "packet_bert_pay"):
         return PacketBERT(N_META, **cfg)
     raise ValueError(f"unknown model '{name}'; choose from {MODEL_NAMES}")
 

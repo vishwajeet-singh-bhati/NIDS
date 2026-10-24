@@ -5,11 +5,10 @@
     python scripts/run_realtime.py --raw-root ... --quick                                    # tiny budget, to check it runs
 
 For each consolidated dataset <tag>_<strategy>_s<seed> (made by scripts/run_phase34.py) it runs
-  1. pretrain  PacketBERT (label-free masked-packet modelling, train split only)
-  2. finetune  packet_bert from the pretrained encoder   (run name: pb_pre)
-  3. finetune  packet_bert from scratch                  (pb_scratch  - ablation: does pre-training help?)
-  4. finetune  hybrid_resnet with prefix augmentation    (hybrid     - the existing QAT CNN baseline)
-  5. stream replay of VAL (threshold selection) and TEST captures for every run
+  1. finetune  hybrid_resnet with prefix augmentation + QAT          (hybrid  - best model so far)
+  2. pretrain  PacketBERT-with-payload (label-free), finetune with QAT (pbpay_pre)
+  3. --ablations: PacketBERT-with-payload from scratch (pbpay_scratch), metadata-only PacketBERT (pb_meta_scratch)
+  4. stream replay of VAL (thresholds + device rule chosen here) and TEST captures for every run
 and collects everything into artifacts/realtime_report.txt (send me that file).
 Manifest/splits are located from the dataset name (data/manifests/p34_<tag>.csv, data/splits/<name>.csv).
 """
@@ -59,8 +58,9 @@ def main():
     ap.add_argument("--max-steps-per-epoch", type=int, default=None)
     ap.add_argument("--target-fpr", type=float, default=0.01)
     ap.add_argument("--capture-stride", type=int, default=1, help="replay every K-th val/test capture (speed)")
-    ap.add_argument("--no-ablations", action="store_true", help="only pb_pre")
-    ap.add_argument("--with-hybrid", action="store_true")
+    ap.add_argument("--ablations", action="store_true", help="also train PacketBERT-with-payload from scratch and metadata-only PacketBERT")
+    ap.add_argument("--no-pretrain", action="store_true", help="skip PacketBERT pretraining/fine-tuning (hybrid only)")
+    ap.add_argument("--with-hybrid", action="store_true", help="(kept for compatibility; hybrid is always run now)")
     ap.add_argument("--quick", action="store_true")
     ap.add_argument("--skip-tests", action="store_true")
     a = ap.parse_args()
@@ -88,20 +88,23 @@ def main():
             if not man.exists() or not sp.exists():
                 out.write(f"\n!! skipping {name}: missing {man if not man.exists() else sp}\n")
                 continue
-            pre_dir = ROOT / "runs" / name / "pretrain_s0"
-            cmd = [py, "-m", "src.training.pretrain", "--dataset", d, "--out", pre_dir, "--epochs", a.pretrain_epochs]
+            pre_dir = ROOT / "runs" / name / "pretrain_pay_s0"
+            cmd = [py, "-m", "src.training.pretrain", "--dataset", d, "--model", "packet_bert_pay", "--out", pre_dir,
+                   "--epochs", a.pretrain_epochs]
             if a.max_steps_per_epoch:
                 cmd += ["--max-steps-per-epoch", a.max_steps_per_epoch]
-            run(f"1. pretrain {name}", cmd, out)
-            plan = [("pb_pre", "packet_bert", ["--init-from", pre_dir / "encoder.pt"])]
-            if not a.no_ablations:
-                plan.append(("pb_scratch", "packet_bert", []))
-            if a.with_hybrid:
-                plan.append(("hybrid", "hybrid_resnet", []))
+            if not a.no_pretrain:
+                run(f"1. pretrain (payload) {name}", cmd, out)
+            plan = [("hybrid", "hybrid_resnet", [])]
+            if not a.no_pretrain:
+                plan.append(("pbpay_pre", "packet_bert_pay", ["--init-from", pre_dir / "encoder.pt"]))
+            if a.ablations:
+                plan.append(("pbpay_scratch", "packet_bert_pay", []))
+                plan.append(("pb_meta_scratch", "packet_bert", []))
             for tag, model, extra in plan:
                 rd = ROOT / "runs" / name / f"{tag}_s0"
-                if tag == "pb_pre" and not (pre_dir / "encoder.pt").exists():
-                    out.write("\n!! pretraining produced no encoder; skipping pb_pre\n")
+                if tag == "pbpay_pre" and not (pre_dir / "encoder.pt").exists():
+                    out.write("\n!! pretraining produced no encoder; skipping pbpay_pre\n")
                     continue
                 cmd = [py, "-m", "src.training.train", "--dataset", d, "--model", model, "--run-dir", rd,
                        "--epochs", a.epochs, "--prefix-aug", 0.5] + extra
@@ -122,7 +125,14 @@ def main():
                 out.write(f"{f.parent.parent.parent.name}/{f.parent.parent.name}: thr={m['threshold_selection']['threshold_logit']:.2f} "
                           f"flow acc={fl['accuracy']:.3f} P={fl['precision']:.3f} R={fl['recall']:.3f} F1={fl['f1']:.3f} FPR={fl['fpr']:.3f} | "
                           f"capture R={cl['recall']:.3f} benign-capture-FA={cl['benign_capture_false_alarm_rate']:.3f} "
-                          f"alerts/benign-h={cl['alerts_per_benign_hour']:.1f}\n")
+                          f"alerts/benign-h={cl['alerts_per_benign_hour']:.1f}")
+                dv = m.get("device_level")
+                if dv:
+                    g = dv["test"]
+                    out.write(f" | DEVICE rule {dv['selected']['min_alerts']}/{dv['selected']['window_s']:g}s: acc={g['accuracy']:.3f} "
+                              f"P={g['precision']:.3f} R={g['recall']:.3f} F1={g['f1']:.3f} benignFA={g['benign_capture_false_alarm_rate']:.3f} "
+                              f"alarms/benign-h={g['alarms_per_benign_hour']:.2f}")
+                out.write("\n")
             except Exception as exc:  # noqa: BLE001
                 out.write(f"{f}: unreadable ({exc})\n")
         for f in sorted((ROOT / "runs").rglob("stream_report.md")):

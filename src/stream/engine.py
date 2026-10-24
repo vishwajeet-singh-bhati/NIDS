@@ -32,6 +32,7 @@ from src.data.parse_pcap import ParsedPacket, ParseStats, decode_packet, iter_pa
 from src.models.model_factory import load_checkpoint
 from src.training.data import tensors_from_arrays
 from src.utils.config import FlowConfig, ParseConfig, PipelineConfig, load_config
+from src.stream.device_rule import BurstDetector, BurstParams
 from src.stream.policy import PolicyParams, PolicyState, step
 from src.utils.metrics import sigmoid
 
@@ -51,6 +52,8 @@ class StreamConfig:
     max_active_flows: int = 50_000               # memory guard; oldest flows are evicted (and finalised) beyond it
     cooldown_s: float = 60.0                     # suppress repeat alerts for the same (initiator ip, responder ip:port, proto)
     drain_every: int = 2000                      # packets between housekeeping passes
+    device_window_s: float = 60.0                # device alarm: >= device_min_alerts flow alerts within this many seconds
+    device_min_alerts: int = 10
 
 
 @dataclass
@@ -100,6 +103,8 @@ class StreamDetector:
         self.scores: List[Dict[str, Any]] = []        # optional score trace (replay evaluation)
         self.record_scores = False
         self._last_alert: Dict[tuple, float] = {}
+        self.burst = BurstDetector(BurstParams(self.sc.device_window_s, self.sc.device_min_alerts))
+        self.device_alarms: List[Dict[str, Any]] = []
         self._since_drain = 0
         self.stats = {"packets": 0, "packets_kept": 0, "flows_seen": 0, "inferences": 0, "alerts": 0,
                       "alerts_suppressed_cooldown": 0, "inference_seconds": 0.0, "batches": 0}
@@ -206,26 +211,37 @@ class StreamDetector:
 
     def _emit(self, p: _Pending, st: FlowState, z: float, reason: str) -> List[Dict[str, Any]]:
         f = p.flow
+        out: List[Dict[str, Any]] = []
+        # the device rule counts EVERY flow alert (also those whose log line is de-duplicated below), exactly like replay_eval
+        if self.burst.add(p.ts):
+            alarm = {"event": "device_alarm", "ts": p.ts,
+                     "rule": f">= {self.sc.device_min_alerts} flow alerts within {self.sc.device_window_s:g}s",
+                     "model": self.ck["model_name"], "note": "detection/log only, nothing is blocked"}
+            self.stats["device_alarms"] = self.stats.get("device_alarms", 0) + 1
+            self.device_alarms.append(alarm)
+            out.append(alarm)
         dedupe = (f.initiator[0], f.responder[0], f.responder[1], f.ip_proto)
         last = self._last_alert.get(dedupe)
         if last is not None and p.ts - last < self.sc.cooldown_s:
             self.stats["alerts_suppressed_cooldown"] += 1
-            return []
-        self._last_alert[dedupe] = p.ts
-        ev = {"ts": p.ts, "flow_index": f.flow_index, "initiator": f"{f.initiator[0]}:{f.initiator[1]}",
-              "responder": f"{f.responder[0]}:{f.responder[1]}", "ip_proto": f.ip_proto, "reason": reason,
-              "window_logit": round(z, 4), "flow_score": round(st.pol.ema, 4),
-              "window_prob": round(float(sigmoid(np.array([z]))[0]), 4), "scored_windows": st.pol.scored,
-              "packets_seen": len(f.packets), "flow_start_ts": f.start_ts,
-              "seconds_since_flow_start": round(p.ts - f.start_ts, 4), "decided_on_prefix_k": p.k,
-              "model": self.ck["model_name"],
-              "note": "malicious-associated traffic pattern (weak-label model); detection/log only, nothing is blocked"}
-        self.stats["alerts"] += 1
-        self.alerts.append(ev)
+        else:
+            self._last_alert[dedupe] = p.ts
+            ev = {"event": "flow_alert", "ts": p.ts, "flow_index": f.flow_index, "initiator": f"{f.initiator[0]}:{f.initiator[1]}",
+                  "responder": f"{f.responder[0]}:{f.responder[1]}", "ip_proto": f.ip_proto, "reason": reason,
+                  "window_logit": round(z, 4), "flow_score": round(st.pol.ema, 4),
+                  "window_prob": round(float(sigmoid(np.array([z]))[0]), 4), "scored_windows": st.pol.scored,
+                  "packets_seen": len(f.packets), "flow_start_ts": f.start_ts,
+                  "seconds_since_flow_start": round(p.ts - f.start_ts, 4), "decided_on_prefix_k": p.k,
+                  "model": self.ck["model_name"],
+                  "note": "malicious-associated traffic pattern (weak-label model); detection/log only, nothing is blocked"}
+            self.stats["alerts"] += 1
+            self.alerts.append(ev)
+            out.insert(0, ev)
         if self.sink is not None:
-            self.sink.write(json.dumps(ev) + "\n")
+            for e in out:
+                self.sink.write(json.dumps(e) + "\n")
             self.sink.flush()
-        return [ev]
+        return out
 
     # ------------------------------------------------------------------ lifecycle
     def _housekeeping(self) -> List[Dict[str, Any]]:
@@ -256,6 +272,7 @@ class StreamDetector:
         self.tracker = FlowTracker(self.cfg.flow)
         self.parse_stats = ParseStats()
         self.state, self.queue, self._last_alert, self._since_drain, self.now = {}, [], {}, 0, 0.0
+        self.burst = BurstDetector(BurstParams(self.sc.device_window_s, self.sc.device_min_alerts))
 
     def summary(self) -> Dict[str, Any]:
         s = dict(self.stats)

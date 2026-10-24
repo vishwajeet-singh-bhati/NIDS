@@ -56,3 +56,18 @@ packet_bert:
   head_hidden: 64
   qat: true
   qat_start_epoch: 6
+
+# Model E2: PacketBERT WITH payload bytes. On CIC-AndMal2017 the payload-reading models (cnn_payload, hybrid_resnet)
+# were clearly stronger (val ROC-AUC ~0.75-0.78) than metadata-only ones (~0.63-0.67), so this is the fair BERT variant.
+packet_bert_pay:
+  d_model: 96
+  heads: 4
+  layers: 3
+  ff_mult: 2
+  dropout: 0.1
+  use_payload: true
+  byte_embed_dim: 16
+  byte_channels: [32, 64]
+  head_hidden: 64
+  qat: true
+  qat_start_epoch: 6

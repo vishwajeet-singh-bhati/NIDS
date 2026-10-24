@@ -36,6 +36,15 @@ def _threshold_from_run(run_dir: Path) -> Optional[float]:
     return None
 
 
+def _device_rule_from_run(run_dir: Path):
+    f = run_dir / "stream" / "stream_metrics.json"
+    if f.is_file():
+        sel = json.loads(f.read_text()).get("device_level", {}).get("selected")
+        if sel:
+            return float(sel["window_s"]), int(sel["min_alerts"])
+    return None
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--run-dir", required=True)
@@ -45,6 +54,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument("--alerts", default="alerts.jsonl")
     ap.add_argument("--threshold", type=float, default=None)
     ap.add_argument("--checkpoints", type=int, nargs="+", default=[8, 16, 32])
+    ap.add_argument("--device-window", type=float, default=None, help="device alarm window in s (default: chosen on val by replay_eval)")
+    ap.add_argument("--device-min-alerts", type=int, default=None, help="flow alerts within the window that raise a device alarm")
     ap.add_argument("--min-hits", type=int, default=2)
     ap.add_argument("--bpf", default=None, help="optional BPF filter for live capture, e.g. 'not port 22'")
     ap.add_argument("--stats-every", type=float, default=30.0, help="seconds between stats lines (live)")
@@ -58,10 +69,15 @@ def main(argv: Optional[List[str]] = None) -> int:
     if thr is None:
         log.error("no threshold: run src.stream.replay_eval first (it selects one on validation) or pass --threshold")
         return 2
-    sc = StreamConfig(checkpoints=tuple(a.checkpoints), min_hits=a.min_hits, threshold=thr)
+    rule = _device_rule_from_run(run_dir)
+    win = a.device_window if a.device_window is not None else (rule[0] if rule else 60.0)
+    nmin = a.device_min_alerts if a.device_min_alerts is not None else (rule[1] if rule else 10)
+    sc = StreamConfig(checkpoints=tuple(a.checkpoints), min_hits=a.min_hits, threshold=thr, device_window_s=win,
+                      device_min_alerts=nmin)
     sink = open(a.alerts, "a", buffering=1)
     det = StreamDetector(str(run_dir / "best.pt"), stream_cfg=sc, device=a.device, alert_sink=sink, config_path=a.data_config)
-    log.info("model=%s threshold(logit)=%.3f checkpoints=%s -> alerts: %s", det.ck["model_name"], thr, sc.checkpoints, a.alerts)
+    log.info("model=%s threshold(logit)=%.3f checkpoints=%s device rule: >=%d flow alerts in %gs -> alerts: %s", det.ck["model_name"],
+             thr, sc.checkpoints, nmin, win, a.alerts)
     try:
         if a.pcap:
             for p in a.pcap:

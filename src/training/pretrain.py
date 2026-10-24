@@ -79,7 +79,7 @@ def load_pretrained_encoder(model: torch.nn.Module, path: str) -> str:
 
 def pretrain(dataset_dir: str, out_dir: str | Path, cfg: Optional[Dict[str, Any]] = None,
              model_cfg: Optional[Dict[str, Any]] = None, model_cfg_path: str = "configs/model.yaml",
-             device: str = "auto") -> Dict[str, Any]:
+             device: str = "auto", model_name: str = "packet_bert") -> Dict[str, Any]:
     c = {**DEFAULTS, **(cfg or {})}
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
@@ -88,8 +88,8 @@ def pretrain(dataset_dir: str, out_dir: str | Path, cfg: Optional[Dict[str, Any]
     ddir = Path(dataset_dir)
     card = json.loads((ddir / "dataset_card.json").read_text())
     norm = Normalizer.load(ddir / "normalization.json")
-    mc = dict(model_cfg) if model_cfg is not None else load_model_config(model_cfg_path, "packet_bert")
-    model = build_model("packet_bert", mc).to(device)
+    mc = dict(model_cfg) if model_cfg is not None else load_model_config(model_cfg_path, model_name)
+    model = build_model(model_name, mc).to(device)
     kinds = set(model.inputs)
     tr = SplitData(dataset_dir, "train", norm, max_examples=int(c["max_train_examples"]), seed=int(c["seed"]))
     va = SplitData(dataset_dir, "val", norm)
@@ -138,7 +138,7 @@ def pretrain(dataset_dir: str, out_dir: str | Path, cfg: Optional[Dict[str, Any]
                  vl, vb, hist[-1]["ratio"], hist[-1]["seconds"])
         if vl < best - 1e-4:
             best, bad = vl, 0
-            torch.save({"encoder_state": model.encoder_state(), "model_cfg": mc, "feature_spec": card["feature_spec"],
+            torch.save({"encoder_state": model.encoder_state(), "model_cfg": mc, "model_name": model_name, "feature_spec": card["feature_spec"],
                         "normalization": norm.spec, "dataset_dir": str(dataset_dir), "epoch": ep, "val_mpm": vl,
                         "val_zero_baseline": vb, "pretrain_cfg": c}, out / "encoder.pt")
         else:
@@ -157,6 +157,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--dataset", required=True)
     ap.add_argument("--out", default=None)
+    ap.add_argument("--model", default="packet_bert", choices=["packet_bert", "packet_bert_pay"])
     ap.add_argument("--model-config", default="configs/model.yaml")
     ap.add_argument("--train-config", default="configs/pretrain.yaml")
     for k, t in (("epochs", int), ("batch_size", int), ("lr", float), ("seed", int), ("max_steps_per_epoch", int),
@@ -172,7 +173,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             cfg[k] = getattr(a, k)
     out = a.out or str(Path("runs") / Path(a.dataset).name / f"pretrain_s{cfg.get('seed', 0)}")
     try:
-        res = pretrain(a.dataset, out, cfg, None, a.model_config, a.device)
+        res = pretrain(a.dataset, out, cfg, None, a.model_config, a.device, a.model)
     except (FileNotFoundError, ValueError) as exc:
         log.error("%s", exc)
         return 2

@@ -242,3 +242,65 @@ def test_choose_threshold_respects_target_fpr():
                      "flow_start_ts": 0.0})
     ch = choose_threshold(pd.DataFrame(rows), PolicyParams(0.0, 0.5, 2, 3.0), 0.05, "fpr")
     assert ch["val"]["fpr"] <= 0.05 and ch["val"]["recall"] > 0.5
+
+
+# ------------------------------------------------------------------ device-level rule
+def test_burst_rule_counts_alerts_inside_window_and_cools_down():
+    from src.stream.device_rule import BurstParams, alarm_times
+    p = BurstParams(window_s=10, min_alerts=3)
+    assert alarm_times([0, 20, 40], p) == []                       # spread out: never 3 within 10 s
+    assert alarm_times([0, 1, 2], p) == [2]
+    assert alarm_times([0, 1, 2, 3, 4, 5, 6], p) == [2]            # cooldown (= window) suppresses repeats
+    assert alarm_times([0, 1, 2, 13, 14, 15], p) == [2, 15]        # a second burst later alarms again
+    assert alarm_times([5, 0, 1, 2], p) == [2]                     # input order does not matter
+
+
+def test_engine_emits_device_alarm_after_burst(ckpt):
+    det = StreamDetector(str(ckpt), stream_cfg=StreamConfig(threshold=0.0, min_hits=1, device_window_s=60, device_min_alerts=3,
+                                                              cooldown_s=0), config_path="configs/data.yaml")
+    det.model, det.kinds, det.include_payload = _Const(5.0), {"meta"}, False
+    ev = []
+    for i in range(4):                                             # four different flows, each alerting at its 8th packet
+        for p in _long_flow(10, t0=100.0 + i):
+            for q in (p,):
+                q.sport = 41000 + i if q.src_ip == "10.0.0.2" else q.sport
+                q.dport = 41000 + i if q.dst_ip == "10.0.0.2" else q.dport
+            ev += det.feed(p)
+        ev += det.run_inference()
+    kinds = [e["event"] for e in ev]
+    assert kinds.count("flow_alert") == 4 and kinds.count("device_alarm") == 1
+
+
+def test_device_level_selects_on_val_and_applies_to_test():
+    from src.stream.replay_eval import device_level
+    rng = np.random.default_rng(1)
+
+    def mk_split(prefix):
+        rows, caps, cs = [], [], []
+        for i in range(30):
+            y = int(i % 3 == 0)
+            cid = f"{prefix}{i}"
+            caps.append({"capture_id": cid, "binary_label": y})
+            cs.append({"capture_id": cid, "duration_s": 600.0})
+            for j in range(40):
+                hot = rng.random() < (0.6 if y else 0.02)
+                rows.append({"capture_id": cid, "y": y, "logits": np.array([5.0 if hot else -5.0]), "ts": np.array([j * 5.0]),
+                             "k": np.array([8]), "npk": np.array([8]), "flow_start_ts": j * 5.0})
+        return {"flows": pd.DataFrame(rows), "caps": pd.DataFrame(caps), "captures": pd.DataFrame(cs)}
+    R = {"val": mk_split("v"), "test": mk_split("t")}
+    d = device_level(R, PolicyParams(0.0, 0.5, 1, 3.0), "test", target_fa=0.05)
+    assert d["val"]["benign_capture_false_alarm_rate"] <= 0.05
+    assert d["test"]["recall"] > 0.9 and d["test"]["benign_capture_false_alarm_rate"] <= 0.1
+    assert d["selected"]["min_alerts"] >= 3
+
+
+def test_payload_packetbert_pretrain_and_finetune(consolidated_dataset, tmp_path):
+    from src.training.pretrain import pretrain
+    from src.training.train import train
+    cfg = {**SMALL}
+    r = pretrain(str(consolidated_dataset), tmp_path / "p", {"epochs": 1, "batch_size": 64, "max_steps_per_epoch": 3},
+                 model_cfg=cfg, device="cpu", model_name="packet_bert_pay")
+    assert torch.load(r["encoder"], weights_only=False)["model_name"] == "packet_bert_pay"
+    train(str(consolidated_dataset), "packet_bert_pay", tmp_path / "f", {"epochs": 1, "batch_size": 64, "max_steps_per_epoch": 3,
+          "init_from": r["encoder"], "prefix_aug": 0.5}, model_cfg=cfg, device="cpu")
+    assert (tmp_path / "f" / "best.pt").exists()
