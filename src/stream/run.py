@@ -1,13 +1,13 @@
 """Run the real-time detector.
 
     # replay one or more PCAPs (also works with a named pipe: mkfifo /tmp/cap; tcpdump -U -w /tmp/cap)
-    python -m src.stream.run --run-dir runs/<ds>/packet_bert_s0 --pcap a.pcap b.pcap --alerts alerts.jsonl
+    python -m src.stream.run --bundle models/nids_v1 --pcap a.pcap b.pcap --alerts alerts.jsonl
 
     # live capture from an interface on this machine (needs capture privileges, e.g. sudo / root on a rooted phone)
-    sudo python -m src.stream.run --run-dir runs/<ds>/packet_bert_s0 --iface en0 --alerts alerts.jsonl
+    sudo python -m src.stream.run --bundle models/nids_v1 --iface eth0 --alerts alerts.jsonl
 
-The threshold comes from `<run-dir>/stream/stream_metrics.json` (selected on VAL by src.stream.replay_eval)
-unless --threshold is given. Detection and logging only: nothing is blocked, nothing is uploaded.
+A --bundle (src.stream.bundle) carries the model, threshold and device rule. With --run-dir instead, the threshold comes
+from `<run-dir>/stream/stream_metrics.json` (selected on VAL by src.stream.replay_eval) unless --threshold is given. Detection and logging only: nothing is blocked, nothing is uploaded.
 """
 from __future__ import annotations
 
@@ -47,7 +47,8 @@ def _device_rule_from_run(run_dir: Path):
 
 def main(argv: Optional[List[str]] = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--run-dir", required=True)
+    ap.add_argument("--run-dir", default=None)
+    ap.add_argument("--bundle", default=None, help="deployment bundle folder (model.pt + config.json)")
     src = ap.add_mutually_exclusive_group(required=True)
     src.add_argument("--pcap", nargs="+")
     src.add_argument("--iface", help="live capture interface (scapy); 'any' on Linux/Android")
@@ -64,18 +65,33 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument("--log-level", default="INFO")
     a = ap.parse_args(argv)
     setup_logging(a.log_level)
-    run_dir = Path(a.run_dir)
-    thr = a.threshold if a.threshold is not None else _threshold_from_run(run_dir)
-    if thr is None:
-        log.error("no threshold: run src.stream.replay_eval first (it selects one on validation) or pass --threshold")
+    if bool(a.bundle) == bool(a.run_dir):
+        log.error("give exactly one of --bundle or --run-dir")
         return 2
-    rule = _device_rule_from_run(run_dir)
-    win = a.device_window if a.device_window is not None else (rule[0] if rule else 60.0)
-    nmin = a.device_min_alerts if a.device_min_alerts is not None else (rule[1] if rule else 10)
-    sc = StreamConfig(checkpoints=tuple(a.checkpoints), min_hits=a.min_hits, threshold=thr, device_window_s=win,
-                      device_min_alerts=nmin)
+    if a.bundle:
+        bdir = Path(a.bundle)
+        bc = json.loads((bdir / "config.json").read_text())
+        ckpt = str(bdir / "model.pt")
+        thr = a.threshold if a.threshold is not None else float(bc["threshold_logit"])
+        win = a.device_window if a.device_window is not None else float(bc["device_rule"]["window_s"])
+        nmin = a.device_min_alerts if a.device_min_alerts is not None else int(bc["device_rule"]["min_alerts"])
+        sc = StreamConfig(checkpoints=tuple(bc["checkpoints"]), min_hits=bc["min_hits"], ema_alpha=bc["ema_alpha"],
+                          hard_margin=bc["hard_margin"], cooldown_s=bc["cooldown_s"], threshold=thr,
+                          device_window_s=win, device_min_alerts=nmin)
+    else:
+        run_dir = Path(a.run_dir)
+        ckpt = str(run_dir / "best.pt")
+        thr = a.threshold if a.threshold is not None else _threshold_from_run(run_dir)
+        if thr is None:
+            log.error("no threshold: run src.stream.replay_eval first (it selects one on validation) or pass --threshold")
+            return 2
+        rule = _device_rule_from_run(run_dir)
+        win = a.device_window if a.device_window is not None else (rule[0] if rule else 60.0)
+        nmin = a.device_min_alerts if a.device_min_alerts is not None else (rule[1] if rule else 10)
+        sc = StreamConfig(checkpoints=tuple(a.checkpoints), min_hits=a.min_hits, threshold=thr, device_window_s=win,
+                          device_min_alerts=nmin)
     sink = open(a.alerts, "a", buffering=1)
-    det = StreamDetector(str(run_dir / "best.pt"), stream_cfg=sc, device=a.device, alert_sink=sink, config_path=a.data_config)
+    det = StreamDetector(ckpt, stream_cfg=sc, device=a.device, alert_sink=sink, config_path=a.data_config)
     log.info("model=%s threshold(logit)=%.3f checkpoints=%s device rule: >=%d flow alerts in %gs -> alerts: %s", det.ck["model_name"],
              thr, sc.checkpoints, nmin, win, a.alerts)
     try:

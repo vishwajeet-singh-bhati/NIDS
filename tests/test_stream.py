@@ -304,3 +304,30 @@ def test_payload_packetbert_pretrain_and_finetune(consolidated_dataset, tmp_path
     train(str(consolidated_dataset), "packet_bert_pay", tmp_path / "f", {"epochs": 1, "batch_size": 64, "max_steps_per_epoch": 3,
           "init_from": r["encoder"], "prefix_aug": 0.5}, model_cfg=cfg, device="cpu")
     assert (tmp_path / "f" / "best.pt").exists()
+
+
+# ------------------------------------------------------------------ bundle + CLI
+def test_bundle_export_and_run_cli(ckpt, consolidated_dataset, andmal_like_manifest, tmp_path):
+    from src.stream import replay_eval, run as stream_run
+    from src.stream.bundle import export_bundle
+    run = tmp_path / "run"
+    run.mkdir()
+    (run / "best.pt").write_bytes(Path(ckpt).read_bytes())
+    sp = Path(consolidated_dataset).parent / "splits" / "t.csv"
+    replay_eval.run(str(run), andmal_like_manifest["manifest"], str(sp), str(andmal_like_manifest["raw"]), str(run / "stream"),
+                    target_fpr=0.05, max_captures=6)
+    b = export_bundle(run, tmp_path / "bundle")
+    assert {"model.pt", "config.json", "MODEL_CARD.md"} <= {x.name for x in b.iterdir()}
+    cfg = json.loads((b / "config.json").read_text())
+    assert "threshold_logit" in cfg and "window_s" in cfg["device_rule"]
+    assert "Limits" in (b / "MODEL_CARD.md").read_text()
+    pcap = next(Path(andmal_like_manifest["raw"]).rglob("*.pcap"))
+    assert stream_run.main(["--bundle", str(b), "--pcap", str(pcap), "--alerts", str(tmp_path / "a.jsonl")]) == 0
+    assert stream_run.main(["--bundle", str(b), "--run-dir", str(run), "--pcap", str(pcap)]) == 2     # exactly one of the two
+
+
+def test_export_bundle_requires_replay_results(tmp_path):
+    from src.stream.bundle import export_bundle
+    (tmp_path / "best.pt").write_bytes(b"x")
+    with pytest.raises(FileNotFoundError):
+        export_bundle(tmp_path, tmp_path / "out")

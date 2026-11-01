@@ -47,6 +47,16 @@ from src.utils.logging_utils import setup_logging
 log = logging.getLogger("replay")
 
 
+def locate_inputs(dataset_dir: str, root: str | Path = ".") -> tuple[Path, Path]:
+    """data/datasets/<tag>_<strategy>_s<seed>  ->  (data/manifests/p34_<tag>.csv, data/splits/<dataset name>.csv)
+    (the naming used by scripts/run_phase34.py)."""
+    import re
+    name = Path(dataset_dir).name
+    m = re.match(r"^(?P<tag>.+)_(group_random|family_holdout(?:_noinfra)?)_s\d+$", name)
+    tag = m.group("tag") if m else name
+    return Path(root) / "data/manifests" / f"p34_{tag}.csv", Path(root) / "data/splits" / f"{name}.csv"
+
+
 # --------------------------------------------------------------------------------------- capture table
 def capture_table(manifest: str, splits: str, raw_root: Optional[str], split_names: Sequence[str]) -> pd.DataFrame:
     man = pd.read_csv(manifest, low_memory=False)
