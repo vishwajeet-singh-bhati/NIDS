@@ -203,7 +203,7 @@ class StreamDetector:
         reason = step(st.pol, z, PolicyParams(sc.threshold, sc.ema_alpha, sc.min_hits, sc.hard_margin))
         if self.record_scores:
             self.scores.append({"flow_index": p.flow.flow_index, "start": p.start, "k": p.k, "ts": p.ts,
-                                "logit": z, "n_packets": len(p.flow.packets), "final": p.final,
+                                "logit": z, "n_packets": p.start + p.k, "final": p.final,
                                 "initiator_ip": p.flow.initiator[0], "responder_ip": p.flow.responder[0],
                                 "responder_port": p.flow.responder[1], "ip_proto": p.flow.ip_proto,
                                 "flow_start_ts": p.flow.start_ts})
@@ -230,7 +230,7 @@ class StreamDetector:
                   "responder": f"{f.responder[0]}:{f.responder[1]}", "ip_proto": f.ip_proto, "reason": reason,
                   "window_logit": round(z, 4), "flow_score": round(st.pol.ema, 4),
                   "window_prob": round(float(sigmoid(np.array([z]))[0]), 4), "scored_windows": st.pol.scored,
-                  "packets_seen": len(f.packets), "flow_start_ts": f.start_ts,
+                  "packets_seen": p.start + p.k, "flow_start_ts": f.start_ts,
                   "seconds_since_flow_start": round(p.ts - f.start_ts, 4), "decided_on_prefix_k": p.k,
                   "model": self.ck["model_name"],
                   "note": "malicious-associated traffic pattern (weak-label model); detection/log only, nothing is blocked"}

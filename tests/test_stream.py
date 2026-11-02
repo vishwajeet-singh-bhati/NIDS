@@ -331,3 +331,17 @@ def test_export_bundle_requires_replay_results(tmp_path):
     (tmp_path / "best.pt").write_bytes(b"x")
     with pytest.raises(FileNotFoundError):
         export_bundle(tmp_path, tmp_path / "out")
+
+
+def test_packets_seen_reflects_decision_time_even_when_inference_is_batched(ckpt):
+    """The model call is batched, so by the time it runs the flow has grown; the alert must still report the
+    prefix it was decided on (8 packets), not the flow size at batch time."""
+    det = StreamDetector(str(ckpt), stream_cfg=StreamConfig(threshold=0.0, min_hits=1, batch_size=10 ** 6), config_path="configs/data.yaml")
+    det.model, det.kinds, det.include_payload = _Const(5.0), {"meta"}, False
+    det.record_scores = True
+    for p in _long_flow(30):
+        det.feed(p)
+    ev = det.run_inference()
+    a = [e for e in ev if e["event"] == "flow_alert"][0]
+    assert a["packets_seen"] == 8 and a["decided_on_prefix_k"] == 8
+    assert min(s["n_packets"] for s in det.scores) == 8

@@ -16,6 +16,7 @@ import json
 import logging
 import signal
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import List, Optional
@@ -107,13 +108,15 @@ def main(argv: Optional[List[str]] = None) -> int:
             return 0
         from scapy.all import AsyncSniffer  # imported lazily: only live capture needs it
         last = [time.time()]
+        lock = threading.Lock()                      # the sniffer thread and the flush loop share one detector
         stop = {"flag": False}
 
         def on_pkt(p) -> None:
             lt = _LINKTYPES.get(type(p).__name__)
             if lt is None:
                 return
-            det.feed_raw(bytes(p), lt, float(p.time), len(p))
+            with lock:
+                det.feed_raw(bytes(p), lt, float(p.time), len(p))
             if time.time() - last[0] > a.stats_every:
                 last[0] = time.time()
                 log.info("stats %s", json.dumps({k: (round(v, 3) if isinstance(v, float) else v) for k, v in det.summary().items()}))
@@ -126,10 +129,12 @@ def main(argv: Optional[List[str]] = None) -> int:
         sn.start()
         log.info("capturing on %s ... Ctrl-C to stop", a.iface)
         while not stop["flag"]:
-            time.sleep(0.5)
-            det.run_inference()          # flush the micro-batch even when traffic is quiet
+            time.sleep(0.2)
+            with lock:
+                det.run_inference()      # flush the micro-batch even when traffic is quiet
         sn.stop()
-        det.finish()
+        with lock:
+            det.finish()
         print(json.dumps(det.summary(), indent=2))
         return 0
     finally:
