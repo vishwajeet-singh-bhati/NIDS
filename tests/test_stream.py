@@ -345,3 +345,39 @@ def test_packets_seen_reflects_decision_time_even_when_inference_is_batched(ckpt
     a = [e for e in ev if e["event"] == "flow_alert"][0]
     assert a["packets_seen"] == 8 and a["decided_on_prefix_k"] == 8
     assert min(s["n_packets"] for s in det.scores) == 8
+
+
+# ------------------------------------------------------------------ QAT: fixed activation ranges
+def _qat_batch(B, W=32, seed=0):
+    g = torch.Generator().manual_seed(seed)
+    mask = (torch.rand(B, W, generator=g) < 0.6).float()
+    mask[:, 0] = 1
+    return {"mask": mask, "meta": torch.randn(B, W, 12, generator=g) * mask.unsqueeze(-1), "agg": torch.randn(B, 22, generator=g),
+            "payload": torch.randint(0, 257, (B, W, 128), generator=g) * mask.long().unsqueeze(-1)}
+
+
+@pytest.mark.parametrize("name", ["hybrid_resnet", "packet_bert_pay"])
+def test_qat_scores_do_not_depend_on_batch_after_calibration(name):
+    from src.models.model_factory import load_model_config
+    torch.manual_seed(0)
+    m = build_model(name, load_model_config("configs/model.yaml", name))
+    m.enable_qat(True)
+    m.train()
+    for i in range(6):                                           # "training": the observers learn the activation ranges
+        m(_qat_batch(32, seed=i))
+    m.eval()
+    b = _qat_batch(40, seed=99)
+    with torch.no_grad():
+        full = m(b)
+        one = torch.stack([m({k: v[i:i + 1] for k, v in b.items()})[0] for i in range(10)])
+        part = m({k: v[:7] for k, v in b.items()})
+    assert (one - full[:10]).abs().max() < 1e-4 and (part - full[:7]).abs().max() < 1e-4
+
+
+def test_old_checkpoint_without_act_max_still_loads():
+    from src.models.model_factory import load_model_config
+    m = build_model("hybrid_resnet", load_model_config("configs/model.yaml", "hybrid_resnet"))
+    sd = {k: v for k, v in m.state_dict().items() if not k.endswith("act_max")}
+    m2 = build_model("hybrid_resnet", load_model_config("configs/model.yaml", "hybrid_resnet"))
+    m2.load_state_dict(sd)                                       # strict: must not raise
+    assert all(float(v) == 0.0 for k, v in m2.state_dict().items() if k.endswith("act_max"))

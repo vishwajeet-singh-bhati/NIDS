@@ -32,36 +32,65 @@ def fake_quant_weight_per_channel(w: torch.Tensor, num_bits: int = 8) -> torch.T
     return w + (w_q - w).detach()
 
 
-def fake_quant_act_per_tensor(x: torch.Tensor, num_bits: int = 8) -> torch.Tensor:
-    """Symmetric per-tensor INT8 activation fake quantization with STE."""
+def fake_quant_act_per_tensor(x: torch.Tensor, scale_max: torch.Tensor, num_bits: int = 8) -> torch.Tensor:
+    """Symmetric per-tensor INT8 activation fake quantization with STE, using a FIXED range `scale_max`."""
     qmax = float((1 << (num_bits - 1)) - 1)  # 127.0
-    max_val = x.detach().abs().amax().clamp(min=1e-8)
-    scale = max_val / qmax
+    scale = scale_max.clamp(min=1e-8) / qmax
     x_q = torch.clamp(torch.round(x / scale), -qmax, qmax) * scale
     return x + (x_q - x).detach()
 
 
-class QATConv1d(nn.Conv1d):
+class _ActObserver:
+    """Mixin: a persistent activation range `act_max` (EMA of the batch max seen in TRAINING mode).
+
+    Training: update the EMA with the current batch, then quantise with the EMA.  Eval: quantise with the stored EMA, so a
+    window's output never depends on the other windows in its batch (the live detector batches arbitrary windows) and the
+    range is a constant, as in a real INT8 model.  A checkpoint without `act_max` (older runs) loads with act_max = 0, which
+    falls back to the old per-batch range, so old bundles keep working (but are batch dependent)."""
+    ACT_EMA = 0.99
+
+    def _init_observer(self) -> None:
+        self.register_buffer("act_max", torch.zeros(()))
+
+    def _act_range(self, x: torch.Tensor) -> torch.Tensor:
+        cur = x.detach().abs().amax()
+        if self.training:
+            with torch.no_grad():
+                new = torch.where(self.act_max > 0, self.ACT_EMA * self.act_max + (1 - self.ACT_EMA) * cur, cur)
+                self.act_max.copy_(new)
+            return self.act_max
+        return torch.where(self.act_max > 0, self.act_max, cur)          # uncalibrated old checkpoint -> per-batch range
+
+    def _load_from_state_dict(self, state_dict, prefix, *args, **kwargs):
+        key = prefix + "act_max"
+        if key not in state_dict:
+            state_dict[key] = self.act_max.detach().clone()
+        super()._load_from_state_dict(state_dict, prefix, *args, **kwargs)
+
+
+class QATConv1d(_ActObserver, nn.Conv1d):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.qat_active = False
+        self._init_observer()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         if self.qat_active:
-            x = fake_quant_act_per_tensor(x)
+            x = fake_quant_act_per_tensor(x, self._act_range(x))
             w = fake_quant_weight_per_channel(self.weight)
             return F.conv1d(x, w, self.bias, self.stride, self.padding, self.dilation, self.groups)
         return super().forward(x)
 
 
-class QATLinear(nn.Linear):
+class QATLinear(_ActObserver, nn.Linear):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.qat_active = False
+        self._init_observer()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         if self.qat_active:
-            x = fake_quant_act_per_tensor(x)
+            x = fake_quant_act_per_tensor(x, self._act_range(x))
             w = fake_quant_weight_per_channel(self.weight)
             return F.linear(x, w, self.bias)
         return super().forward(x)
