@@ -185,11 +185,14 @@ GRID_T = (30.0, 60.0, 300.0)
 GRID_N = (1, 3, 5, 10, 20, 50)
 
 
-def _device_eval(alert_times: Dict[str, List[float]], caps: pd.DataFrame, cap_stats: pd.DataFrame, bp: BurstParams) -> Dict[str, Any]:
+def _device_eval(alert_times: Dict[str, List[float]], caps: pd.DataFrame, cap_stats: pd.DataFrame, bp: BurstParams,
+                 t0: Optional[Dict[str, float]] = None) -> Dict[str, Any]:
     dur = cap_stats.set_index("capture_id")["duration_s"].to_dict()
-    y, flag, n_alarm, first = [], [], [], []
+    y, flag, n_alarm, first, delay = [], [], [], [], []
     for r in caps.itertuples():
         al = alarm_times(alert_times.get(r.capture_id, []), bp)
+        if al and int(r.binary_label) == 1 and t0 and r.capture_id in t0:
+            delay.append(al[0] - t0[r.capture_id])
         y.append(int(r.binary_label))
         flag.append(int(len(al) > 0))
         n_alarm.append(len(al))
@@ -204,7 +207,9 @@ def _device_eval(alert_times: Dict[str, List[float]], caps: pd.DataFrame, cap_st
             "accuracy": d(tp + tn, len(y)), "precision": prec, "recall": rec,
             "f1": d(2 * prec * rec, prec + rec) if prec == prec and rec == rec else float("nan"),
             "benign_capture_false_alarm_rate": d(fp, fp + tn),
-            "alarms_per_benign_hour": float(n_alarm[y == 0].sum() / ben_h) if ben_h > 0 else float("nan")}
+            "alarms_per_benign_hour": float(n_alarm[y == 0].sum() / ben_h) if ben_h > 0 else float("nan"),
+            "time_to_first_alarm_s": ({"median": float(np.median(delay)), "p90": float(np.quantile(delay, 0.9)), "n": len(delay)}
+                                      if delay else None)}
 
 
 def device_level(replay: Dict[str, Dict[str, pd.DataFrame]], p: PolicyParams, test_split: str, target_fa: float = 0.05,
@@ -218,7 +223,9 @@ def device_level(replay: Dict[str, Dict[str, pd.DataFrame]], p: PolicyParams, te
         times[sp] = {}
         for cid, tt in zip(a["capture_id"], t):
             times[sp].setdefault(cid, []).append(float(tt))
-    grid = [_device_eval(times["val"], replay["val"]["caps"], replay["val"]["captures"], BurstParams(T, N)) for T in grid_t for N in grid_n]
+    t0 = {sp: replay[sp]["flows"].groupby("capture_id")["flow_start_ts"].min().to_dict() for sp in ("val", test_split)}
+    grid = [_device_eval(times["val"], replay["val"]["caps"], replay["val"]["captures"], BurstParams(T, N), t0["val"])
+            for T in grid_t for N in grid_n]
     ok = [g for g in grid if g["benign_capture_false_alarm_rate"] <= target_fa and g["recall"] == g["recall"]]
     if ok:
         best = max(ok, key=lambda g: (g["recall"], -g["benign_capture_false_alarm_rate"], g["min_alerts"], -g["window_s"]))
@@ -228,7 +235,7 @@ def device_level(replay: Dict[str, Dict[str, pd.DataFrame]], p: PolicyParams, te
         note = f"no rule reached val benign-capture false-alarm rate <= {target_fa}; using the lowest"
     bp = BurstParams(best["window_s"], best["min_alerts"])
     return {"target_benign_capture_false_alarm_rate": target_fa, "selected": {"window_s": bp.window_s, "min_alerts": bp.min_alerts},
-            "note": note, "val": best, test_split: _device_eval(times[test_split], replay[test_split]["caps"], replay[test_split]["captures"], bp),
+            "note": note, "val": best, test_split: _device_eval(times[test_split], replay[test_split]["caps"], replay[test_split]["captures"], bp, t0[test_split]),
             "val_grid": grid}
 
 # --------------------------------------------------------------------------------------- report

@@ -62,6 +62,10 @@ def model_card(sm: Dict[str, Any], cfg: Dict[str, Any]) -> str:
         L.append(f"| device (capture) | {_f(dv['accuracy'])} | {_f(dv['precision'])} | {_f(dv['recall'])} | {_f(dv['f1'])} | "
                  f"{_f(dv['benign_capture_false_alarm_rate'])} of benign captures; {_f(dv['alarms_per_benign_hour'], 2)} alarms / benign hour |")
         L.append(f"\nDevice-level test set: {dv['n_captures']} captures (tp {dv['tp']}, fp {dv['fp']}, fn {dv['fn']}, tn {dv['tn']}).")
+    if dv and dv.get("time_to_first_alarm_s"):
+        d = dv["time_to_first_alarm_s"]
+        L.append(f"\nTime from the first flow of a malware capture to its first device alarm: median {_f(d['median'], 1)} s, p90 {_f(d['p90'], 1)} s "
+                 f"({d['n']} detected malware captures). The alarm needs a burst of flow alerts, so it is much slower than a single flow alert.")
     ttd = t.get("time_to_detect_true_positive_flows")
     if ttd:
         L.append(f"\nTime to detect (true-positive flows): median {_f(ttd['median_s'])} s / {_f(ttd['median_packets'], 0)} packets; "
@@ -69,7 +73,9 @@ def model_card(sm: Dict[str, Any], cfg: Dict[str, Any]) -> str:
     L += ["", "## Limits - read before trusting it", "",
           "- Labels are per capture: benign background traffic inside malware captures counts as malicious, so flow-level recall is capped.",
           "- Benign and malware captures were recorded on largely different dates; the model may partly learn capture-time artefacts.",
-          "- Device-level numbers come from a small test set (see counts above) and one training seed.",
+          "- Device-level numbers come from the capture counts above (a handful of malware families); seeds share the same split, so spread over seeds "
+          "reflects training noise only, not split-to-split variation.",
+          "- Precision at device level depends on how common malware is: the test set is roughly one-fifth malware; with rarer malware, precision falls.",
           "- Payload bytes are mostly ciphertext; the signal may come from handshake fields that identify apps rather than maliciousness.",
           "- Not a production-grade detector. Not validated on other datasets or on live device traffic."]
     return "\n".join(L) + "\n"
