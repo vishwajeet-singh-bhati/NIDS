@@ -12,6 +12,15 @@ flagged traffic resemble?". It never sees benign traffic, so it says nothing abo
 * Split is the stage-1 split (capture-level, no leakage). Test is used once, at the end.
 
     python -m src.training.train_type --dataset data/datasets/full_group_random_s0 --out runs/type_s0
+
+Optional extras (all selected / reported on validation, then test once):
+  --stage1 <model.pt>      adds a 5th class "NotMalware" trained on HARD NEGATIVES: benign train windows that the
+                           stage-1 detector scores highest (what a false alarm looks like). Flagged-but-benign bursts
+                           can then be routed to "probably benign".
+  --exclude-class Adware   hold one category OUT of training; its captures are then an "unknown malware type" test:
+                           we report how many of them fall below the unsure threshold (-> "unknown type").
+  The report always includes a POOL-SIZE curve: accuracy when only N random windows of a capture are available
+  (an alarm burst is much shorter than a whole capture).
 """
 from __future__ import annotations
 
@@ -19,7 +28,7 @@ import argparse
 import json
 import logging
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Sequence
 
 import numpy as np
 import pandas as pd
@@ -54,30 +63,69 @@ def _per_class(y: np.ndarray, p: np.ndarray, classes: List[str]) -> Dict[str, Di
     return out
 
 
-class TypeData:
-    """Malicious windows of one split with integer category labels."""
+NEG = "NotMalware"
 
-    def __init__(self, dataset_dir: str, split: str, norm: Normalizer, classes: Optional[List[str]] = None):
+
+class TypeData:
+    """Windows of one split with integer labels: malicious windows by `malware_category`, plus (optionally)
+    hard-negative benign windows labelled NEG. Excluded categories are kept apart as `ood_rows`."""
+
+    def __init__(self, dataset_dir: str, split: str, norm: Normalizer, classes: Optional[List[str]] = None,
+                 exclude: Sequence[str] = (), neg_rows: Optional[np.ndarray] = None):
         self.d = SplitData(dataset_dir, split, norm)
         ix = self.d.index
         mal = (ix["binary_label"].astype(int) == 1).to_numpy()
         cat = ix["malware_category"].astype(str).to_numpy()
         if classes is None:
-            classes = sorted(set(cat[mal]))
+            classes = sorted(set(cat[mal]) - set(exclude))
+            if neg_rows is not None:
+                classes = classes + [NEG]
         self.classes = classes
         lut = {c: i for i, c in enumerate(classes)}
         keep = mal & np.array([c in lut for c in cat])
-        self.rows = np.flatnonzero(keep)
-        self.y = np.array([lut[c] for c in cat[self.rows]], dtype=np.int64)
-        self.capture = ix["capture_id"].astype(str).to_numpy()[self.rows]
+        rows = np.flatnonzero(keep)
+        y = np.array([lut[c] for c in cat[rows]], dtype=np.int64)
+        if neg_rows is not None and NEG in lut:
+            rows = np.concatenate([rows, np.asarray(neg_rows, dtype=np.int64)])
+            y = np.concatenate([y, np.full(len(neg_rows), lut[NEG], dtype=np.int64)])
+        self.rows, self.y = rows, y
+        cap = ix["capture_id"].astype(str).to_numpy()
+        self.capture = cap[rows]
+        ood = mal & np.isin(cat, list(exclude)) if len(exclude) else np.zeros(len(mal), bool)
+        self.ood_rows = np.flatnonzero(ood)
+        self.ood_capture = cap[self.ood_rows]
 
 
-def _logits(model, td: TypeData, kinds, device: str, bs: int, prefix_k: Optional[int] = None) -> np.ndarray:
+def hard_negatives(dataset_dir: str, split: str, norm: Normalizer, stage1: str, device: str,
+                   top_frac: float = 0.2, sample: int = 150000, max_n: int = 30000, seed: int = 0) -> np.ndarray:
+    """Benign windows that the stage-1 detector scores highest (its false-alarm look-alikes)."""
+    from src.models.model_factory import load_checkpoint
+    from src.training.evaluate import predict
+    d = SplitData(dataset_dir, split, norm)
+    ben = np.flatnonzero(d.index["binary_label"].astype(int).to_numpy() == 0)
+    rng = np.random.default_rng(seed)
+    if len(ben) > sample:
+        ben = np.sort(rng.choice(ben, sample, replace=False))
+    m, _ = load_checkpoint(stage1, device)
+    d.sel = ben
+    sc = predict(m, d, 1024, device)
+    top = ben[np.argsort(-sc)[: max(int(top_frac * len(ben)), 1)]]
+    if len(top) > max_n:
+        top = rng.choice(top, max_n, replace=False)
+    log.info("%s: %d hard-negative benign windows (top %.0f%% of %d stage-1 scores)", split, len(top), 100 * top_frac, len(ben))
+    return np.sort(top)
+
+
+def _logits(model, td: TypeData, kinds, device: str, bs: int, prefix_k: Optional[int] = None,
+            rows: Optional[np.ndarray] = None) -> np.ndarray:
     model.eval()
     out = []
+    rows = td.rows if rows is None else rows
+    if len(rows) == 0:
+        return np.zeros((0, model.n_out))
     with torch.no_grad():
-        for i in range(0, len(td.rows), bs):
-            b = td.d.batch(td.rows[i:i + bs], kinds, prefix_k)
+        for i in range(0, len(rows), bs):
+            b = td.d.batch(rows[i:i + bs], kinds, prefix_k)
             b = {k: v.to(device) for k, v in b.items()}
             out.append(model(b).cpu().numpy())
     return np.concatenate(out)
@@ -103,6 +151,49 @@ def _choose_unsure(probs: np.ndarray, y: np.ndarray, target_acc: float) -> float
     return best
 
 
+def pool_curve(td: TypeData, logits: np.ndarray, thr: float, sizes=(1, 5, 20, 50), draws: int = 20, seed: int = 0):
+    """Accuracy when only N random windows of a capture are available (alarm bursts are short)."""
+    p = torch.softmax(torch.from_numpy(logits), 1).numpy()
+    caps = pd.Series(np.arange(len(p))).groupby(td.capture).apply(np.array)
+    rng = np.random.default_rng(seed)
+    out = {}
+    for n in sizes:
+        acc, cov, accc = [], [], []
+        for _ in range(draws):
+            pr, yy = [], []
+            for idx in caps:
+                sel = rng.choice(idx, min(n, len(idx)), replace=False)
+                pr.append(p[sel].mean(0)); yy.append(td.y[idx[0]])
+            pr, yy = np.array(pr), np.array(yy)
+            pred, conf = pr.argmax(1), pr.max(1)
+            keep = conf >= thr
+            acc.append((pred == yy).mean()); cov.append(keep.mean())
+            accc.append((pred[keep] == yy[keep]).mean() if keep.any() else np.nan)
+        out[str(n)] = {"capture_acc": float(np.mean(acc)), "coverage": float(np.mean(cov)),
+                       "acc_on_confident": float(np.nanmean(accc))}
+    return out
+
+
+def ood_report(td: TypeData, model, kinds, device: str, classes: List[str], thr: float, n_windows: int = 0):
+    """Held-out (never trained) malware category: how are its captures labelled?"""
+    if len(td.ood_rows) == 0:
+        return None
+    lg = _logits(model, td, kinds, device, 512, rows=td.ood_rows)
+    p = torch.softmax(torch.from_numpy(lg), 1).numpy()
+    df = pd.DataFrame(p); df["cap"] = td.ood_capture
+    probs = df.groupby("cap").mean().to_numpy()
+    conf, pred = probs.max(1), probs.argmax(1)
+    unsure = conf < thr
+    lab = {c: int(((pred == i) & ~unsure).sum()) for i, c in enumerate(classes)}
+    return {"captures": int(len(probs)), "unknown_type": int(unsure.sum()), "labelled_as": lab,
+            "fraction_unknown": float(unsure.mean()),
+            "fraction_wrongly_confident": float(((~unsure) & (classes_is_known(classes, pred))).mean())}
+
+
+def classes_is_known(classes: List[str], pred: np.ndarray) -> np.ndarray:
+    return np.array([classes[i] != NEG for i in pred])
+
+
 def _report(name: str, td: TypeData, logits: np.ndarray, classes: List[str], thr: float) -> Dict[str, Any]:
     wp = logits.argmax(1)
     _, probs, y = _pool(td, logits)
@@ -123,15 +214,18 @@ def _report(name: str, td: TypeData, logits: np.ndarray, classes: List[str], thr
 def train_type(dataset_dir: str, out_dir: str, epochs: int = 12, batch_size: int = 128, lr: float = 1e-3,
                prefix_aug: float = 0.5, seed: int = 0, device: str = "auto", target_acc: float = 0.90,
                max_steps_per_epoch: int = 0, model_cfg_path: str = "configs/model.yaml",
-               qat_start_epoch: int = 6) -> Dict[str, Any]:
+               qat_start_epoch: int = 6, stage1: str = "", exclude: Sequence[str] = ()) -> Dict[str, Any]:
     set_seed(seed)
     device = resolve_device(device)
     out = Path(out_dir); out.mkdir(parents=True, exist_ok=True)
     ddir = Path(dataset_dir)
     norm = Normalizer.load(ddir / "normalization.json")
-    tr = TypeData(dataset_dir, "train", norm)
+    negs = {sp: (hard_negatives(dataset_dir, sp, norm, stage1, device, seed=seed) if stage1 else None)
+            for sp in ("train", "val", "test")}
+    tr = TypeData(dataset_dir, "train", norm, None, exclude, negs["train"])
     classes = tr.classes
-    va, te = TypeData(dataset_dir, "val", norm, classes), TypeData(dataset_dir, "test", norm, classes)
+    va = TypeData(dataset_dir, "val", norm, classes, exclude, negs["val"])
+    te = TypeData(dataset_dir, "test", norm, classes, exclude, negs["test"])
     K = len(classes)
     cfg = load_model_config(model_cfg_path, "hybrid_resnet")
     cfg.update({"n_out": K, "qat_start_epoch": qat_start_epoch})
@@ -168,7 +262,7 @@ def train_type(dataset_dir: str, out_dir: str, epochs: int = 12, batch_size: int
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             opt.step()
-            losses.append(float(loss))
+            losses.append(float(loss.detach()))
         lv = _logits(model, va, kinds, device, 512)
         _, pv, yv = _pool(va, lv)
         f1 = _macro_f1(yv, pv.argmax(1), K)
@@ -186,7 +280,12 @@ def train_type(dataset_dir: str, out_dir: str, epochs: int = 12, batch_size: int
     _, pv, yv = _pool(va, lv)
     thr = _choose_unsure(pv, yv, target_acc)
     res = {"classes": classes, "best_epoch": ck["epoch"], "target_acc_for_unsure": target_acc,
-           "val": _report("val", va, lv, classes, thr), "test": _report("test", te, lt, classes, thr)}
+           "stage1_hard_negatives": stage1 or None, "excluded_from_training": list(exclude),
+           "val": _report("val", va, lv, classes, thr), "test": _report("test", te, lt, classes, thr),
+           "pool_curve_val": pool_curve(va, lv, thr), "pool_curve_test": pool_curve(te, lt, thr)}
+    if exclude:
+        res["unknown_type_val"] = ood_report(va, model, kinds, device, classes, thr)
+        res["unknown_type_test"] = ood_report(te, model, kinds, device, classes, thr)
     ck["unsure_threshold"] = thr
     torch.save(ck, out / "best.pt")
     (out / "type_metrics.json").write_text(json.dumps(res, indent=2))
@@ -213,6 +312,19 @@ def render(r: Dict[str, Any]) -> str:
             L.append(f"| {c} | {m['precision']:.2f} | {m['recall']:.2f} | {m['f1']:.2f} | {m['support']} |")
         L += ["", "confusion (rows true, cols predicted): " + ", ".join(cl)]
         L += ["    " + " ".join(f"{v:4d}" for v in row) for row in s["confusion_capture"]] + [""]
+    for sp in ("val", "test"):
+        L += [f"## pool-size curve ({sp}): only N random windows per capture are available", "",
+              "| N windows | capture acc | coverage (not unsure) | acc on confident |", "|---|---|---|---|"]
+        for n, m in r[f"pool_curve_{sp}"].items():
+            L.append(f"| {n} | {m['capture_acc']:.3f} | {m['coverage']:.2f} | {m['acc_on_confident']:.3f} |")
+        L.append("")
+    for sp in ("val", "test"):
+        u = r.get(f"unknown_type_{sp}")
+        if u:
+            L += [f"## unknown-type check ({sp}): category(ies) {r['excluded_from_training']} were NEVER trained on", "",
+                  f"- {u['captures']} captures: {u['unknown_type']} flagged 'unknown type' "
+                  f"({u['fraction_unknown']:.2f}), {u['fraction_wrongly_confident']:.2f} confidently given a wrong "
+                  f"known type; labelled as: {u['labelled_as']}", ""]
     return "\n".join(L)
 
 
@@ -229,10 +341,12 @@ def main(argv=None) -> int:
     ap.add_argument("--target-acc", type=float, default=0.90)
     ap.add_argument("--max-steps-per-epoch", type=int, default=0)
     ap.add_argument("--qat-start-epoch", type=int, default=6)
+    ap.add_argument("--stage1", default="", help="stage-1 model.pt -> add NotMalware class from hard negatives")
+    ap.add_argument("--exclude-class", action="append", default=[], help="malware category held out of training (unknown-type test)")
     a = ap.parse_args(argv)
     setup_logging()
     train_type(a.dataset, a.out, a.epochs, a.batch_size, a.lr, a.prefix_aug, a.seed, a.device, a.target_acc,
-               a.max_steps_per_epoch, qat_start_epoch=a.qat_start_epoch)
+               a.max_steps_per_epoch, qat_start_epoch=a.qat_start_epoch, stage1=a.stage1, exclude=a.exclude_class)
     return 0
 
 
