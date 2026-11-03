@@ -183,8 +183,10 @@ class HybridResNet1D(nn.Module):
         dropout: float = 0.2,
         qat: bool = True,
         qat_start_epoch: int = 8,
+        n_out: int = 1,
     ):
         super().__init__()
+        self.n_out = int(n_out)
         self.qat_enabled = bool(qat)
         self.qat_start_epoch = int(qat_start_epoch)
         self.register_buffer("qat_active_buf", torch.tensor(0, dtype=torch.uint8))
@@ -217,7 +219,7 @@ class HybridResNet1D(nn.Module):
             QATLinear(head_hidden, head_hidden // 2, bias=False),
             nn.BatchNorm1d(head_hidden // 2),
             nn.ReLU(inplace=True),
-            QATLinear(head_hidden // 2, 1),
+            QATLinear(head_hidden // 2, n_out),
         )
 
     def enable_qat(self, active: bool = True) -> None:
@@ -260,4 +262,5 @@ class HybridResNet1D(nn.Module):
 
         seq_feat = torch.cat([mx, mn, att], dim=1)
         agg_feat = self.agg_net(batch["agg"])
-        return self.head(torch.cat([seq_feat, agg_feat], dim=1)).squeeze(-1)
+        out = self.head(torch.cat([seq_feat, agg_feat], dim=1))
+        return out.squeeze(-1) if self.n_out == 1 else out
