@@ -1,17 +1,32 @@
-# ML Datasets, Outputs, and Logs
+# ML datasets, outputs, logs (anchored to repo root only)
 /data/
 /results/
 /runs/
 /artifacts/
 TEST_RESULTS.txt
 
-# Python & Android Caches
+# Virtualenvs (anchored so src/detection/nids is NOT ignored)
+/nids/
+.venv/
+venv/
+
+# Python
 __pycache__/
 *.py[cod]
-venv/
 .env
+
+# Trained weights (keep folder structure only)
+/models/**/*.pt
+/models/**/*.pth
+/models/**/*.joblib
+/models/**/*.pkl
+/models/**/*.onnx
+
+# Android
 android/.gradle/
 android/build/
 android/local.properties
 .idea/
-nids/
+
+# OS
+.DS_Store
