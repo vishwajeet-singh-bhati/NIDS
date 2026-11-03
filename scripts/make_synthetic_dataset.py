@@ -16,7 +16,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from src.utils.synthetic import (beacon_shaped_capture, benign_shaped_capture, make_andmal_like,  # noqa: E402
+from src.common.synthetic import (beacon_shaped_capture, benign_shaped_capture, make_andmal_like,  # noqa: E402
                                  write_pcap)
 
 

@@ -13,8 +13,8 @@ from collections import Counter
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from src.data.parse_pcap import ParseStats, iter_packets  # noqa: E402
-from src.utils.config import ParseConfig  # noqa: E402
+from src.detection.nids.data.parse_pcap import ParseStats, iter_packets  # noqa: E402
+from src.common.config import ParseConfig  # noqa: E402
 
 BUCKETS = [(1e-6, "<1us"), (1e-3, "<1ms"), (1e-2, "<10ms"), (1e-1, "<100ms"), (1.0, "<1s"),
            (60.0, "<1min"), (float("inf"), ">=1min")]

@@ -89,7 +89,7 @@ def main():
                 out.write(f"\n!! skipping {name}: missing {man if not man.exists() else sp}\n")
                 continue
             pre_dir = ROOT / "runs" / name / "pretrain_pay_s0"
-            cmd = [py, "-m", "src.training.pretrain", "--dataset", d, "--model", "packet_bert_pay", "--out", pre_dir,
+            cmd = [py, "-m", "src.detection.nids.training.pretrain", "--dataset", d, "--model", "packet_bert_pay", "--out", pre_dir,
                    "--epochs", a.pretrain_epochs]
             if a.max_steps_per_epoch:
                 cmd += ["--max-steps-per-epoch", a.max_steps_per_epoch]
@@ -106,14 +106,14 @@ def main():
                 if tag == "pbpay_pre" and not (pre_dir / "encoder.pt").exists():
                     out.write("\n!! pretraining produced no encoder; skipping pbpay_pre\n")
                     continue
-                cmd = [py, "-m", "src.training.train", "--dataset", d, "--model", model, "--run-dir", rd,
+                cmd = [py, "-m", "src.detection.nids.training.train", "--dataset", d, "--model", model, "--run-dir", rd,
                        "--epochs", a.epochs, "--prefix-aug", 0.5] + extra
                 if a.max_steps_per_epoch:
                     cmd += ["--max-steps-per-epoch", a.max_steps_per_epoch]
                 if run(f"2. finetune {name} / {tag}", cmd, out) != 0:
                     continue
                 run(f"3. stream replay {name} / {tag}",
-                    [py, "-m", "src.stream.replay_eval", "--run-dir", rd, "--manifest", man, "--splits", sp,
+                    [py, "-m", "src.detection.nids.stream.replay_eval", "--run-dir", rd, "--manifest", man, "--splits", sp,
                      "--raw-root", a.raw_root, "--target-fpr", a.target_fpr, "--capture-stride", a.capture_stride], out,
                     keep_err=("WARNING", "ERROR", "Traceback", "Error"))
         out.write("\n" + "=" * 78 + "\n## summary of stream metrics\n" + "=" * 78 + "\n")

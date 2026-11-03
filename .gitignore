@@ -30,3 +30,7 @@ android/local.properties
 
 # OS
 .DS_Store
+
+# Keep the small deployable bundles
+!/models/nids/nids_v1/**
+!/models/nids/nids_deploy_v1/**

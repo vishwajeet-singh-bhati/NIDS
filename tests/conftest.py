@@ -5,8 +5,8 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from src.data.parse_pcap import TCP_ACK, TCP_FIN, TCP_RST, TCP_SYN, ParsedPacket  # noqa: E402
-from src.utils.config import (PROTO_DNS, PROTO_OTHER, PROTO_TCP, PROTO_UDP, FlowConfig,  # noqa: E402
+from src.detection.nids.data.parse_pcap import TCP_ACK, TCP_FIN, TCP_RST, TCP_SYN, ParsedPacket  # noqa: E402
+from src.common.config import (PROTO_DNS, PROTO_OTHER, PROTO_TCP, PROTO_UDP, FlowConfig,  # noqa: E402
                               ParseConfig, PipelineConfig)
 
 
@@ -39,8 +39,8 @@ def pipeline_cfg():
 def andmal_like_manifest(tmp_path_factory):
     """Synthetic CIC-AndMal2017-LIKE dataset processed with the REAL configs/labels.yaml rules.
     40 benign captures (20 packages x 2), 8 families x 4 captures. Session-scoped (built once)."""
-    from src.data import build_sequences
-    from src.utils.synthetic import make_andmal_like
+    from src.detection.nids.data import build_sequences
+    from src.common.synthetic import make_andmal_like
     root = Path(__file__).resolve().parents[1]
     base = tmp_path_factory.mktemp("andmal_like")
     raw, proc, man = base / "raw", base / "proc", base / "manifest.csv"
@@ -55,7 +55,7 @@ def andmal_like_manifest(tmp_path_factory):
 @pytest.fixture(scope="session")
 def consolidated_dataset(andmal_like_manifest, tmp_path_factory):
     """Splits + consolidates the synthetic AndMal-like manifest (group_random). Used by Phase 5/6 tests."""
-    from src.data import consolidate, splits
+    from src.detection.nids.data import consolidate, splits
     base = tmp_path_factory.mktemp("consolidated")
     sp_dir = base / "splits"
     rc = splits.main(["--manifest", str(andmal_like_manifest["manifest"]), "--name", "t", "--strategy",

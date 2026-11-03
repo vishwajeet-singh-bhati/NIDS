@@ -37,15 +37,15 @@ def main() -> int:
     ap.add_argument("--target-fpr", type=float, default=0.01)
     ap.add_argument("--device-fa", type=float, default=0.05)
     ap.add_argument("--capture-stride", type=int, default=1)
-    ap.add_argument("--bundle-out", default="models/nids_v1")
+    ap.add_argument("--bundle-out", default="models/nids/nids_v1")
     ap.add_argument("--device", default="auto", help="training device: auto|cpu|cuda")
     ap.add_argument("--skip-training-if-exists", action="store_true", help="reuse runs/<ds>/final_s<seed>/best.pt")
     a = ap.parse_args()
-    from src.stream import replay_eval
-    from src.stream.bundle import export_bundle
-    from src.stream.engine import StreamConfig
-    from src.training.train import train
-    from src.utils.logging_utils import setup_logging
+    from src.detection.nids.stream import replay_eval
+    from src.detection.nids.stream.bundle import export_bundle
+    from src.detection.nids.stream.engine import StreamConfig
+    from src.detection.nids.training.train import train
+    from src.common.logger import setup_logging
     setup_logging("INFO")
     ds = a.dataset
     name = Path(ds).name

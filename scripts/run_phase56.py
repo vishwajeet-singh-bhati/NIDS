@@ -70,14 +70,14 @@ def main():
         for d in dsets:
             for m in models:
                 for s in a.seeds:
-                    cmd = [py, "-m", "src.training.train", "--dataset", d, "--model", m, "--seed", s]
+                    cmd = [py, "-m", "src.detection.nids.training.train", "--dataset", d, "--model", m, "--seed", s]
                     for flag, v in (("--epochs", a.epochs), ("--max-steps-per-epoch", a.max_steps_per_epoch),
                                     ("--max-train-examples", a.max_train_examples), ("--sampler", a.sampler)):
                         if v is not None:
                             cmd += [flag, v]
                     run(f"2. train+evaluate {Path(d).name} / {m} / seed {s}", cmd, out)
         run("3. aggregate", [py, "scripts/aggregate_results.py"], out)
-        from src.training.report import describe_run, load_runs
+        from src.detection.nids.training.report import describe_run, load_runs
         out.write("\n" + "=" * 78 + "\n## 4. per-run digests\n" + "=" * 78 + "\n")
         for mj in load_runs(ROOT / "runs"):
             if Path(mj["run"]["dataset_dir"]).name in {Path(d).name for d in dsets}:

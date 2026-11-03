@@ -1,7 +1,7 @@
 """Does a window's score depend on which other windows share its batch?  (matters because the live engine batches
 whatever windows are ready, and the QAT activation scale is computed per batch)
 
-    python scripts/check_batch_invariance.py --bundle models/nids_v1 --dataset data/datasets/full_family_holdout_s0
+    python scripts/check_batch_invariance.py --bundle models/nids/nids_v1 --dataset data/datasets/full_family_holdout_s0
 
 Scores N test windows (a) one at a time, (b) in batches of 32, (c) in batches of 1024 and reports the largest and mean
 absolute logit difference, plus how many windows would flip the flow-alert decision at the bundle's threshold.
@@ -16,9 +16,9 @@ import torch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from src.data.normalization import Normalizer  # noqa: E402
-from src.models.model_factory import load_checkpoint  # noqa: E402
-from src.training.data import SplitData  # noqa: E402
+from src.detection.nids.data.normalization import Normalizer  # noqa: E402
+from src.detection.nids.models.model_factory import load_checkpoint  # noqa: E402
+from src.detection.nids.training.data import SplitData  # noqa: E402
 
 
 def main() -> int:
