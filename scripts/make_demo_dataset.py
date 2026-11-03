@@ -20,8 +20,8 @@ def main(argv=None) -> int:
     ap.add_argument("--n-families", type=int, default=8)
     ap.add_argument("--per-family", type=int, default=4)
     a = ap.parse_args(argv)
-    from src.detection.nids.data import build_sequences, consolidate, splits
-    from src.common.synthetic import make_andmal_like
+    from src.data import build_sequences, consolidate, splits
+    from src.utils.synthetic import make_andmal_like
     out = Path(a.out)
     raw, proc, man, sp = out / "raw", out / "processed", out / "manifest.csv", out / "splits"
     make_andmal_like(raw, n_benign=a.n_benign, n_families=a.n_families, per_family=a.per_family)

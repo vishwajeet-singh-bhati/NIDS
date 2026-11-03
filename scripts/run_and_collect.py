@@ -47,21 +47,21 @@ def main():
     with open(rep, "w", encoding="utf-8") as out:
         out.write(f"python {sys.version}\nplatform {platform.platform()}\nroot {a.root}\n")
         step("1. unit tests", [py, "-m", "pytest", "-q"], out)
-        if step("2. dataset audit", [py, "-m", "src.detection.nids.data.inspect_dataset", "--root", a.root,
+        if step("2. dataset audit", [py, "-m", "src.data.inspect_dataset", "--root", a.root,
                                      "--out", "artifacts/reports/audit", "--probe-packets",
                                      str(a.probe_packets)], out) == 0:
             md = ROOT / "artifacts/reports/audit.md"
             if md.exists():
                 out.write("\n--- audit.md (first 400 lines) ---\n")
                 out.write("".join(md.read_text(encoding="utf-8").splitlines(True)[:400]))
-        step("3. label dry-run", [py, "-m", "src.detection.nids.data.build_sequences", "--config", "configs/data.yaml",
+        step("3. label dry-run", [py, "-m", "src.data.build_sequences", "--config", "configs/data.yaml",
                                   "--raw-root", a.root, "--dry-run-labels"], out)
-        step("4. trial build", [py, "-m", "src.detection.nids.data.build_sequences", "--config", "configs/data.yaml",
+        step("4. trial build", [py, "-m", "src.data.build_sequences", "--config", "configs/data.yaml",
                                 "--raw-root", a.root, "--limit", str(a.limit),
                                 "--max-packets-per-capture", str(a.max_packets), "--overwrite",
                                 "--processed-root", "data/processed/trial",
                                 "--manifest", "data/manifests/trial.csv"], out)
-        step("5. inspect tensors", [py, "-m", "src.detection.nids.data.inspect_processed", "--manifest",
+        step("5. inspect tensors", [py, "-m", "src.data.inspect_processed", "--manifest",
                                     "data/manifests/trial.csv", "--processed-root",
                                     "data/processed/trial", "--show", "3"], out)
         log = ROOT / "data/manifests/processing_log.jsonl"

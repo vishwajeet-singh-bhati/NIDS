@@ -64,7 +64,7 @@ def main():
     with open(rep, "w", encoding="utf-8") as out:
         out.write(f"python {sys.version}\nplatform {platform.platform()}\nroot {a.root}\nmode {tag}\n")
         step("1. unit tests", [py, "-m", "pytest", "-q"], out)
-        build = [py, "-m", "src.detection.nids.data.build_sequences", "--config", "configs/data.yaml", "--raw-root", a.root,
+        build = [py, "-m", "src.data.build_sequences", "--config", "configs/data.yaml", "--raw-root", a.root,
                  "--processed-root", proc, "--manifest", man, "--overwrite", "--workers", a.workers,
                  "--max-examples-per-capture", a.cap_examples, "--max-packets-per-capture", a.max_packets]
         if not a.full:
@@ -76,9 +76,9 @@ def main():
             return
         if not a.no_payload:
             step("3. tensor invariants (loads everything into RAM; skipped in --full)",
-                 [py, "-m", "src.detection.nids.data.inspect_processed", "--manifest", man, "--processed-root", proc, "--show", 2]
+                 [py, "-m", "src.data.inspect_processed", "--manifest", man, "--processed-root", proc, "--show", 2]
                  if not a.full else [py, "-c", "print('skipped in --full mode')"], out)
-        step("4. label audit", [py, "-m", "src.detection.nids.data.label_audit", "--manifest", man, "--out", f"artifacts/reports/label_audit_{tag}"], out)
+        step("4. label audit", [py, "-m", "src.data.label_audit", "--manifest", man, "--out", f"artifacts/reports/label_audit_{tag}"], out)
         rep_md = ROOT / f"artifacts/reports/label_audit_{tag}.md"
         if rep_md.exists():
             out.write("\n--- label_audit.md ---\n" + rep_md.read_text(encoding="utf-8")[:30000])
@@ -88,13 +88,13 @@ def main():
                             ("family_holdout_noinfra", ["--strategy", "family_holdout", "--exclude-local-infra"])):
             full_name = f"{tag}_{name}_s{a.seed}"
             names[name] = full_name
-            step(f"5. split {name}", [py, "-m", "src.detection.nids.data.splits", "--manifest", man, "--name", full_name,
+            step(f"5. split {name}", [py, "-m", "src.data.splits", "--manifest", man, "--name", full_name,
                                       "--seed", a.seed, "--allow-degenerate"] + extra, out)
             md = ROOT / "data/splits" / f"{full_name}.md"
             if md.exists():
                 out.write("\n--- " + md.name + " ---\n" + md.read_text(encoding="utf-8")[:6000])
         for name in ("group_random", "family_holdout"):
-            cmd = [py, "-m", "src.detection.nids.data.consolidate", "--manifest", man, "--processed-root", proc,
+            cmd = [py, "-m", "src.data.consolidate", "--manifest", man, "--processed-root", proc,
                    "--splits", f"data/splits/{names[name]}.csv", "--out", f"data/datasets/{names[name]}"]
             if a.no_payload:
                 cmd.append("--no-payload")

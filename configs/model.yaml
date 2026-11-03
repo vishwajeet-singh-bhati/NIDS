@@ -44,7 +44,7 @@ hybrid_resnet:
   qat: true
   qat_start_epoch: 6
 
-# Model E: PacketBERT - compact BERT-style encoder (pretrain with src.detection.nids.training.pretrain, fine-tune with QAT).
+# Model E: PacketBERT - compact BERT-style encoder (pretrain with src.training.pretrain, fine-tune with QAT).
 # Set use_payload: true to add the payload-byte branch (slower; payload is mostly ciphertext).
 packet_bert:
   d_model: 96

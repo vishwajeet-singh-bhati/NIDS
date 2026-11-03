@@ -16,9 +16,9 @@ import pandas as pd
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from src.detection.nids.stream.device_rule import BurstParams, alarm_times  # noqa: E402
-from src.detection.nids.stream.policy import PolicyParams  # noqa: E402
-from src.detection.nids.stream.replay_eval import apply_policy  # noqa: E402
+from src.stream.device_rule import BurstParams, alarm_times  # noqa: E402
+from src.stream.policy import PolicyParams  # noqa: E402
+from src.stream.replay_eval import apply_policy  # noqa: E402
 
 
 def main() -> int:

@@ -2,7 +2,7 @@
 
     python scripts/tune_device_rule.py --run-dir runs/full_family_holdout_s0/final_s0 --target-fa 0.01 0.02 0.05
     python scripts/tune_device_rule.py --run-dir ... --target-fa 0.01 --write     # store that choice in stream_metrics.json
-    python -m src.detection.nids.stream.bundle --run-dir ... --out models/nids/nids_v1                 # then refresh the bundle + model card
+    python -m src.stream.bundle --run-dir ... --out models/nids_v1                 # then refresh the bundle + model card
 
 The rule is selected on VAL captures only (max recall subject to benign-capture false-alarm rate <= target) and applied
 unchanged to TEST. Flow threshold stays the one replay_eval chose on val. Capture durations are approximated by the span
@@ -17,8 +17,8 @@ import pandas as pd
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from src.detection.nids.stream.policy import PolicyParams  # noqa: E402
-from src.detection.nids.stream.replay_eval import device_level  # noqa: E402
+from src.stream.policy import PolicyParams  # noqa: E402
+from src.stream.replay_eval import device_level  # noqa: E402
 
 
 def load(sd: Path, split: str):
@@ -55,7 +55,7 @@ def main() -> int:
         last["note"] = (last.get("note", "") + " recomputed offline from saved traces (durations approximate)").strip()
         m["device_level"] = last
         (sd / "stream_metrics.json").write_text(json.dumps(m, indent=2, default=lambda o: None if o != o else str(o)))
-        print("\nwrote device_level to stream_metrics.json; now run: python -m src.detection.nids.stream.bundle --run-dir", a.run_dir, "--out <bundle dir>")
+        print("\nwrote device_level to stream_metrics.json; now run: python -m src.stream.bundle --run-dir", a.run_dir, "--out <bundle dir>")
     return 0
 
 

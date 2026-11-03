@@ -14,12 +14,12 @@ blocked, and no traffic leaves the device.
 ```
 configs/   data.yaml (spec v1.1)  labels.yaml (real AndMal rules)  labels.synthetic.yaml
            model.yaml  train.yaml  experiments.yaml
-src/detection/nids/data/      inspect_dataset  parse_pcap  flow_tracker  feature_extraction  labeling  build_sequences
+src/data/      inspect_dataset  parse_pcap  flow_tracker  feature_extraction  labeling  build_sequences
                inspect_processed  dataset_loader  splits  normalization  consolidate  label_audit  flow_tags
-src/detection/nids/models/    mlp_baseline (A)  cnn_1d (B meta, C payload+meta)  hybrid_resnet (D, QAT)  packet_bert (E, QAT)  model_factory
-src/detection/nids/stream/    engine (live detector)  policy (flow alert rule)  replay_eval (flow/capture metrics)  run (CLI)
-src/detection/nids/training/  data  losses  train  pretrain  evaluate  report
-src/common/     config  logging_utils  reproducibility  synthetic  metrics
+src/models/    mlp_baseline (A)  cnn_1d (B meta, C payload+meta)  hybrid_resnet (D, QAT)  packet_bert (E, QAT)  model_factory
+src/stream/    engine (live detector)  policy (flow alert rule)  replay_eval (flow/capture metrics)  run (CLI)
+src/training/  data  losses  train  pretrain  evaluate  report
+src/utils/     config  logging_utils  reproducibility  synthetic  metrics
 scripts/       run_phase34.py  run_phase56.py  run_realtime.py  make_demo_dataset.py  aggregate_results.py  diagnose_timestamps.py
                make_synthetic_dataset.py  run_phase2_smoke.sh  run_and_collect.py
 tests/         157 tests (pytest)
@@ -53,8 +53,8 @@ fixes the `FAIL I4: rel_time decreases` error). Send back `artifacts/phase34_rep
 Single runs:
 
 ```bash
-python -m src.detection.nids.training.train --dataset data/datasets/<name> --model {mlp,cnn_meta,cnn_payload} [--seed 0 --epochs 15 --sampler balanced]
-python -m src.detection.nids.training.evaluate --run-dir runs/<name>/cnn_meta_s0 [--eval-dataset data/datasets/<other>]
+python -m src.training.train --dataset data/datasets/<name> --model {mlp,cnn_meta,cnn_payload} [--seed 0 --epochs 15 --sampler balanced]
+python -m src.training.evaluate --run-dir runs/<name>/cnn_meta_s0 [--eval-dataset data/datasets/<other>]
 ```
 
 ## 3a. Real-time pipeline (streaming detection, pretrained encoder, QAT)
@@ -63,13 +63,13 @@ Why: fixed 32-packet windows are only a *context cap*. A deployed detector must 
 
 | Piece | What it does |
 |---|---|
-| `src/detection/nids/stream/engine.py` | Packets in → same `FlowTracker` as offline → at 8/16/32 packets of a window the first *k* packets are encoded exactly like training and scored → per-flow EMA + hysteresis → JSONL alert. Alerts can fire after the 8th packet. Also scores the last partial window when a flow ends. Micro-batched inference, memory guard, alert cooldown. Detection/logging only. |
+| `src/stream/engine.py` | Packets in → same `FlowTracker` as offline → at 8/16/32 packets of a window the first *k* packets are encoded exactly like training and scored → per-flow EMA + hysteresis → JSONL alert. Alerts can fire after the 8th packet. Also scores the last partial window when a flow ends. Micro-batched inference, memory guard, alert cooldown. Detection/logging only. |
 | `--prefix-aug 0.5` (train) | 50 % of training windows are shown as random packet prefixes (4/8/16/32), so one model works at every checkpoint. Model selection pools val windows at all prefix lengths. |
-| `src/detection/nids/models/packet_bert.py` | Compact BERT-style encoder (≈0.25M params, ReLU FFN, all Linear/Conv are INT8 fake-quant layers). Not `bert-base`: no text/traffic checkpoint transfers to this feature spec and 110M params is not an on-device model. |
-| `src/detection/nids/training/pretrain.py` | Label-free masked-packet-modelling on the TRAIN split only; reports reconstruction vs a zero baseline. |
+| `src/models/packet_bert.py` | Compact BERT-style encoder (≈0.25M params, ReLU FFN, all Linear/Conv are INT8 fake-quant layers). Not `bert-base`: no text/traffic checkpoint transfers to this feature spec and 110M params is not an on-device model. |
+| `src/training/pretrain.py` | Label-free masked-packet-modelling on the TRAIN split only; reports reconstruction vs a zero baseline. |
 | QAT | `qat_start_epoch` switches on per-channel INT8 weight / per-tensor INT8 activation fake-quant with STE; metrics are measured with quantisation active. |
-| `src/detection/nids/stream/device_rule.py` | Device alarm: ≥N flow alerts within T seconds → one `device_alarm` event (the natural “flag this phone” decision). (T, N) is chosen on VAL captures (max recall at benign-capture false-alarm ≤ 5 %) and applied unchanged to TEST. |
-| `src/detection/nids/stream/replay_eval.py` | Pushes held-out PCAPs through the engine; threshold chosen on VAL captures (max recall at FPR ≤ 1 %), applied unchanged to TEST. Reports accuracy / precision / recall / F1 / FPR at **flow** and **capture** level, alerts per benign hour, time-to-detect (s, packets), throughput, per-family recall, and results with local-infrastructure flows removed. |
+| `src/stream/device_rule.py` | Device alarm: ≥N flow alerts within T seconds → one `device_alarm` event (the natural “flag this phone” decision). (T, N) is chosen on VAL captures (max recall at benign-capture false-alarm ≤ 5 %) and applied unchanged to TEST. |
+| `src/stream/replay_eval.py` | Pushes held-out PCAPs through the engine; threshold chosen on VAL captures (max recall at FPR ≤ 1 %), applied unchanged to TEST. Reports accuracy / precision / recall / F1 / FPR at **flow** and **capture** level, alerts per benign hour, time-to-detect (s, packets), throughput, per-family recall, and results with local-infrastructure flows removed. |
 
 Run (after `scripts/run_phase34.py` created `data/datasets/*`):
 
@@ -79,11 +79,11 @@ python scripts/run_realtime.py --raw-root data/raw/CIC-AndMal2017 --ablations   
 python scripts/run_realtime.py --raw-root data/raw/CIC-AndMal2017 --quick           # tiny budget, checks it runs
 
 # individual steps
-python -m src.detection.nids.training.pretrain --dataset data/datasets/<ds> --out runs/<ds>/pretrain_s0
-python -m src.detection.nids.training.train --dataset data/datasets/<ds> --model packet_bert --init-from runs/<ds>/pretrain_s0/encoder.pt --prefix-aug 0.5 --run-dir runs/<ds>/pb_pre_s0
-python -m src.detection.nids.stream.replay_eval --run-dir runs/<ds>/pb_pre_s0 --manifest data/manifests/p34_<tag>.csv --splits data/splits/<ds>.csv --raw-root data/raw/CIC-AndMal2017
-python -m src.detection.nids.stream.run --run-dir runs/<ds>/pb_pre_s0 --pcap some.pcap --alerts alerts.jsonl       # replay
-sudo python -m src.detection.nids.stream.run --run-dir runs/<ds>/pb_pre_s0 --iface en0 --alerts alerts.jsonl        # live capture
+python -m src.training.pretrain --dataset data/datasets/<ds> --out runs/<ds>/pretrain_s0
+python -m src.training.train --dataset data/datasets/<ds> --model packet_bert --init-from runs/<ds>/pretrain_s0/encoder.pt --prefix-aug 0.5 --run-dir runs/<ds>/pb_pre_s0
+python -m src.stream.replay_eval --run-dir runs/<ds>/pb_pre_s0 --manifest data/manifests/p34_<tag>.csv --splits data/splits/<ds>.csv --raw-root data/raw/CIC-AndMal2017
+python -m src.stream.run --run-dir runs/<ds>/pb_pre_s0 --pcap some.pcap --alerts alerts.jsonl       # replay
+sudo python -m src.stream.run --run-dir runs/<ds>/pb_pre_s0 --iface en0 --alerts alerts.jsonl        # live capture
 ```
 
 No re-processing is needed: spec v1.1 shards/datasets built earlier are used as they are.
@@ -160,7 +160,7 @@ Per example, window size `W` (16/32/64; default 32), payload budget `B` (default
 Because padding is explicit and `log_iat` is window-relative, the first `k` packets of a window encode
 identically whether or not later packets exist (`prefix_view`, tested). An early prediction after `k`
 packets is the same model applied to that masked prefix; the delay is `rel_time[k-1]` seconds and `k`
-packets. `src.detection.nids.training.evaluate` reports `k ∈ {4, 8, 16, 32}` with packets/seconds needed. Whether short prefixes are accurate is an empirical question; nothing is claimed.
+packets. `src.training.evaluate` reports `k ∈ {4, 8, 16, 32}` with packets/seconds needed. Whether short prefixes are accurate is an empirical question; nothing is claimed.
 
 ### How awkward traffic is handled
 

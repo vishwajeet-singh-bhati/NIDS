@@ -12,7 +12,7 @@ import pandas as pd
 import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from src.detection.nids.training.report import load_runs, markdown_table, run_row  # noqa: E402
+from src.training.report import load_runs, markdown_table, run_row  # noqa: E402
 
 COLS = ["dataset", "model", "seed", "params", "window", "test_windows", "test_roc_auc", "test_pr_auc",
         "recall@val_fpr1%", "test_fpr@val_fpr1%", "precision@val_fpr1%", "recall@val_fpr5%", "test_fpr@val_fpr5%",
