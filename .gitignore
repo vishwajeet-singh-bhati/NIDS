@@ -14,4 +14,4 @@ android/.gradle/
 android/build/
 android/local.properties
 .idea/
-nids/
+/nids/
