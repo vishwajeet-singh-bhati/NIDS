@@ -128,6 +128,11 @@ def main():
     conv.target_spec.supported_ops = [tf.lite.OpsSet.TFLITE_BUILTINS_INT8, tf.lite.OpsSet.TFLITE_BUILTINS]
     (out / "model_int8.tflite").write_bytes(conv.convert())
 
+    # INT8 weights only (dynamic-range): activations stay float, so the mask-sum denominators are never quantised
+    conv = tf.lite.TFLiteConverter.from_saved_model(str(sm))
+    conv.optimizations = [tf.lite.Optimize.DEFAULT]
+    (out / "model_int8_wonly.tflite").write_bytes(conv.convert())
+
     # ---- 3. reference (ONNX FP32) + every TFLite variant on the same real windows
     sess = ort.InferenceSession(str(onnx_fp), providers=["CPUExecutionProvider"])
     ref = np.concatenate([sess.run(None, {"meta": b["meta"], "mask": b["mask"], "payload": b["payload"].astype(np.int32),
@@ -138,7 +143,7 @@ def main():
                  "|---|---|---|---|---|---|---|",
                  f"| ONNX FP32 (reference) | {onnx_fp.stat().st_size / 1e6:.2f} | - | - | - | {roc_auc(y, ref):.4f} | - |"]
     names_info, fail_lines = {}, []
-    for nm in ("model_fp32", "model_int8"):
+    for nm in ("model_fp32", "model_int8", "model_int8_wonly"):
         p = out / f"{nm}.tflite"
         z, names, fails = run_tflite(p, batches(ev, ev_rows, KINDS, 256))
         names_info[nm] = names
