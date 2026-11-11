@@ -43,6 +43,7 @@ def to_tflite_layout(b):
 
 
 def run_tflite(path, rows_batches, threads=1):
+    """Returns (logits with NaN for windows that failed, {input name: (shape, dtype)}, [failure diagnostics])."""
     from ai_edge_litert.interpreter import Interpreter
     it = Interpreter(model_path=str(path), num_threads=threads)
     it.allocate_tensors()
@@ -52,16 +53,24 @@ def run_tflite(path, rows_batches, threads=1):
             if k in x["name"]:
                 idx[k] = x["index"]
     out = it.get_output_details()[0]["index"]
-    z = []
+    z, fails, n = [], [], 0
     for b in rows_batches:
         t = to_tflite_layout(b)
         for i in range(len(t["mask"])):
             for k in idx:
                 it.set_tensor(idx[k], t[k][i:i + 1])
-            it.invoke()
-            z.append(float(it.get_tensor(out).reshape(-1)[0]))
+            try:
+                it.invoke()
+                z.append(float(it.get_tensor(out).reshape(-1)[0]))
+            except RuntimeError as e:
+                z.append(float("nan"))
+                fails.append({"window": n, "error": str(e)[:160], "mask_sum": float(t["mask"][i].sum()),
+                              "meta_finite": bool(np.isfinite(t["meta"][i]).all()), "agg_finite": bool(np.isfinite(t["agg"][i]).all()),
+                              "mask_values": sorted(set(np.unique(t["mask"][i]).tolist())),
+                              "payload_min_max": [int(t["payload"][i].min()), int(t["payload"][i].max())]})
+            n += 1
     names = {x["name"]: (x["shape"].tolist(), np.dtype(x["dtype"]).name) for x in it.get_input_details()}
-    return np.array(z), names
+    return np.array(z), names, fails
 
 
 def main():
@@ -128,12 +137,19 @@ def main():
                  "| variant | size MB | max abs diff vs ONNX FP32 | mean abs diff | decision flips | window ROC-AUC | median ms (1 thread, desktop) |",
                  "|---|---|---|---|---|---|---|",
                  f"| ONNX FP32 (reference) | {onnx_fp.stat().st_size / 1e6:.2f} | - | - | - | {roc_auc(y, ref):.4f} | - |"]
-    names_info = {}
+    names_info, fail_lines = {}, []
     for nm in ("model_fp32", "model_int8"):
         p = out / f"{nm}.tflite"
-        z, names = run_tflite(p, batches(ev, ev_rows, KINDS, 256))
+        z, names, fails = run_tflite(p, batches(ev, ev_rows, KINDS, 256))
         names_info[nm] = names
-        d = np.abs(z - ref)
+        ok = np.isfinite(z)
+        if fails:
+            print(f"!! {nm}: {len(fails)} of {len(z)} windows FAILED to run. First diagnostics:")
+            for f in fails[:5]:
+                print("   ", f)
+            fail_lines.append(f"- `{nm}.tflite`: {len(fails)} of {len(z)} windows failed, e.g. {fails[0]}")
+        z, refk, yk = np.where(ok, z, 0.0)[ok], ref[ok], y[ok]
+        d = np.abs(z - refk)
         one = next(batches(ev, ev_rows[:1], KINDS, 1))
         t = []
         for _ in range(5):
@@ -141,7 +157,9 @@ def main():
             run_tflite(p, [one])
             t.append((time.perf_counter() - t0) * 1e3)
         rep_lines.append(f"| {nm}.tflite | {p.stat().st_size / 1e6:.2f} | {d.max():.4f} | {d.mean():.5f} | "
-                         f"{int(((z >= thr) != (ref >= thr)).sum())} of {len(z)} | {roc_auc(y, z):.4f} | (see phone benchmark) |")
+                         f"{int(((z >= thr) != (refk >= thr)).sum())} of {len(z)} | {roc_auc(yk, z):.4f} | (see phone benchmark) |")
+    if fail_lines:
+        rep_lines += ["", "## Windows that FAILED in TFLite (excluded from the rows above)", ""] + fail_lines
     rep_lines += ["", "## Input tensors (names differ per file; use these with the phone benchmark tool)", ""]
     for nm, names in names_info.items():
         rep_lines.append(f"- `{nm}.tflite`: " + "; ".join(f"`{k}` {v[0]} {v[1]}" for k, v in names.items()))
