@@ -1,0 +1,11 @@
+# only needed for scripts/export_mobile.py and scripts/export_tflite.py (phone export)
+onnx
+onnxscript
+onnxruntime
+tensorflow
+tf_keras
+onnx2tf
+ai-edge-litert
+onnx_graphsurgeon
+sng4onnx
+onnxsim
