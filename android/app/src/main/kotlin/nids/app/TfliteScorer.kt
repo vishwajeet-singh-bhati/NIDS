@@ -1,7 +1,7 @@
 package nids.app
 
 import android.content.Context
-import com.google.ai.edge.litert.Interpreter
+import org.tensorflow.lite.Interpreter
 import nids.core.PendingWindow
 import nids.core.Scorer
 import nids.core.WindowTensors
