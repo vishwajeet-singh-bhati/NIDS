@@ -33,6 +33,7 @@ object Live {
 class CaptureService : Service() {
     @Volatile private var proc: Process? = null
     private var thread: Thread? = null
+    private var errText: () -> String = { "" }
 
     override fun onBind(i: Intent?): IBinder? = null
 
@@ -56,8 +57,11 @@ class CaptureService : Service() {
             TfliteScorer(this, model).use { scorer ->
                 val eng = StreamEngine(rc, scorer, batchSize = 1)
                 Live.status = "starting tcpdump as root ..."
-                val p = Runtime.getRuntime().exec(arrayOf("su", "-c", "$TCPDUMP -i any -U -s 300 -w - 2>/dev/null"))
+                val p = ProcessBuilder("su", "-c", "$TCPDUMP -i any -U -s 300 -w -").start()
                 proc = p
+                val err = StringBuffer()
+                Thread { try { p.errorStream.bufferedReader().forEachLine { if (err.length < 1500) err.append(it).append(' ') } } catch (_: Exception) {} }.start()
+                errText = { err.toString().trim() }
                 val rd = PcapStreamReader(p.inputStream.buffered(1 shl 16))
                 Live.status = "capturing (linktype ${rd.linktype}), model $model"
                 var n = 0
@@ -71,7 +75,8 @@ class CaptureService : Service() {
                 Live.status = if (Live.running) "capture ended (tcpdump exited; is root granted and tcpdump at $TCPDUMP?)" else "stopped"
             }
         } catch (e: Exception) {
-            Live.status = "error: ${e.javaClass.simpleName}: ${e.message}"
+            val code = try { proc?.let { if (it.waitFor(1, java.util.concurrent.TimeUnit.SECONDS)) "exit ${it.exitValue()}" else "still running" } } catch (_: Exception) { null }
+            Live.status = "error: ${e.javaClass.simpleName}: ${e.message}\ncapture process: $code\nstderr: ${errText()}"
         } finally {
             Live.running = false
             proc?.destroy()

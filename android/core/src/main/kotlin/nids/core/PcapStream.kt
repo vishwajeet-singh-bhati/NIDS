@@ -12,7 +12,7 @@ class PcapStreamReader(private val inp: InputStream) {
 
     init {
         val h = ByteArray(24)
-        readFully(h)
+        if (!readFully(h)) error("stream ended before the pcap header (the capture process produced no output)")
         val magic = ((h[0].toInt() and 0xFF) shl 24) or ((h[1].toInt() and 0xFF) shl 16) or ((h[2].toInt() and 0xFF) shl 8) or (h[3].toInt() and 0xFF)
         when (magic) {
             0xd4c3b2a1.toInt() -> { littleEndian = true; nano = false }
