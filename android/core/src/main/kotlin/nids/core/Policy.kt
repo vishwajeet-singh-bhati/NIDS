@@ -29,6 +29,7 @@ object Policy {
 class BurstDetector(private val windowS: Double, private val minAlerts: Int) {
     private val times = ArrayDeque<Double>()
     private var quietUntil = Double.NEGATIVE_INFINITY
+    val size get() = times.size
     fun add(t: Double): Boolean {
         times.addLast(t)
         while (times.isNotEmpty() && t - times.first() > windowS) times.removeFirst()

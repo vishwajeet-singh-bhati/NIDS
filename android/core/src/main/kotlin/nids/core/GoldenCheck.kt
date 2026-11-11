@@ -59,9 +59,12 @@ object GoldenCheck {
                 }
             }
         }
+        val col = EvidenceCollector(rc)
+        val packs = ArrayList<String>()
         val eng = StreamEngine(rc, scorer, batchSize = 1)
         val got = ArrayList<String>()
         fun note(evs: List<Event>) {
+            for (ev in evs) col.onEvent(ev)?.let { packs.add(it) }
             for (ev in evs) got.add(if (ev.type == "device_alarm") "device_alarm %.6f".format(java.util.Locale.ROOT, ev.ts)
             else "flow_alert ${ev.flowIndex} ${ev.reason} %.6f ${ev.windowLogit}".format(java.util.Locale.ROOT, ev.ts))
         }
@@ -88,6 +91,8 @@ object GoldenCheck {
         if (payMismatch > 0) fail("payload tokens differ: $payMismatch values")
         println("frames=$nframes windows=${exp.size} (tensors checked: $tensorChecked) events=${expEvents.size}")
         println("max|meta diff|=%.2e  max|agg diff|=%.2e  payload mismatches=$payMismatch".format(java.util.Locale.ROOT, maxMeta, maxAgg))
+        File(dir, "evidence_packs.jsonl").writeText(packs.joinToString("\n") + if (packs.isEmpty()) "" else "\n")
+        println("evidence packs written: ${packs.size} (one per device alarm) -> evidence_packs.jsonl")
         println(if (bad == 0) "PARITY OK" else "PARITY FAILED ($bad problems)")
         exitProcess(if (bad == 0) 0 else 1)
     }

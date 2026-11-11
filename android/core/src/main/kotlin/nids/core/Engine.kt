@@ -22,6 +22,7 @@ class Event(
     val scoredWindows: Int = 0, val packetsSeen: Int = 0, val decidedOnPrefixK: Int = 0,
     val flowStartTs: Double = 0.0,
     val rule: String = "",
+    val alertsInWindow: Int = 0,
 ) {
     fun toJson(): String = if (type == "device_alarm")
         """{"event":"device_alarm","ts":${"%.3f".format(Locale.ROOT, ts)},"rule":"$rule","note":"detection/log only, nothing is blocked"}"""
@@ -157,7 +158,7 @@ class StreamEngine(
         val out = ArrayList<Event>()
         if (burst.add(p.ts)) {
             deviceAlarms++
-            out += Event("device_alarm", p.ts, rule = ">= ${sc.deviceMinAlerts} flow alerts within ${"%g".format(Locale.ROOT, sc.deviceWindowS)}s")
+            out += Event("device_alarm", p.ts, rule = ">= ${sc.deviceMinAlerts} flow alerts within ${"%g".format(Locale.ROOT, sc.deviceWindowS)}s", alertsInWindow = burst.size)
         }
         val dedupe = "${f.initiator.ip}|${f.responder.ip}|${f.responder.port}|${f.ipProto}"
         val last = lastAlert[dedupe]

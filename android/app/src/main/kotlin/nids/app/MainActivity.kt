@@ -50,6 +50,7 @@ class MainActivity : Activity() {
         val recent = synchronized(Live.recent) { Live.recent.take(8).joinToString("\n") }
         out.text = "status: ${Live.status}\npackets ${Live.packets} | active flows ${Live.activeFlows} | windows scored ${Live.inferences} " +
             "(${"%.2f".format(java.util.Locale.ROOT, Live.msPerWindow)} ms each)\nflow alerts ${Live.alerts} | DEVICE ALARMS ${Live.deviceAlarms}\n" +
-            "log: ${File(filesDir, "alerts.jsonl")}\n\nlast events:\n$recent"
+            "log: ${File(filesDir, "alerts.jsonl")}\n" +
+            (if (Live.lastPack.isNotEmpty()) "evidence pack ready: files/evidence_packs.jsonl\n" else "") + "\nlast events:\n$recent"
     }
 }

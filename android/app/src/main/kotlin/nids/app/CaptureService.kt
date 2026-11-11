@@ -7,6 +7,7 @@ import android.app.Service
 import android.content.Intent
 import android.os.IBinder
 import nids.core.Event
+import nids.core.EvidenceCollector
 import nids.core.PcapStreamReader
 import nids.core.RuntimeConfig
 import nids.core.StreamEngine
@@ -22,6 +23,7 @@ object Live {
     @Volatile var deviceAlarms = 0L
     @Volatile var activeFlows = 0
     @Volatile var msPerWindow = 0.0
+    @Volatile var lastPack = ""
     val recent = ArrayDeque<String>()
 }
 
@@ -56,6 +58,9 @@ class CaptureService : Service() {
             val rc = RuntimeConfig.parse(assets.open("runtime_config.txt").bufferedReader().readText())
             TfliteScorer(this, model).use { scorer ->
                 val eng = StreamEngine(rc, scorer, batchSize = 1)
+                val col = EvidenceCollector(rc)
+                evidenceLog = File(filesDir, "evidence_packs.jsonl")
+                collector = col
                 Live.status = "starting tcpdump as root ..."
                 val p = ProcessBuilder("su", "-c", "$TCPDUMP -i any -U -s 300 -w -").start()
                 proc = p
@@ -84,8 +89,15 @@ class CaptureService : Service() {
         }
     }
 
+    private var collector: EvidenceCollector? = null
+    private var evidenceLog: File? = null
+
     private fun record(log: File, evs: List<Event>) {
         log.appendText(evs.joinToString("") { it.toJson() + "\n" })
+        for (e in evs) collector?.onEvent(e)?.let { pack ->
+            evidenceLog?.appendText(pack + "\n")
+            Live.lastPack = pack
+        }
         synchronized(Live.recent) {
             for (e in evs) { Live.recent.addFirst(e.toJson()); while (Live.recent.size > 30) Live.recent.removeLast() }
         }
