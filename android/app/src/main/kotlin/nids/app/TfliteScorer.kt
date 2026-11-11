@@ -43,10 +43,10 @@ class TfliteScorer(ctx: Context, assetName: String, threads: Int = 2) : Scorer, 
         bPay.rewind(); bPay.asIntBuffer().put(t.payload); bPay.rewind()
         val inputs = arrayOfNulls<Any>(4)
         inputs[slot[0]] = bMeta; inputs[slot[1]] = bMask; inputs[slot[2]] = bPay; inputs[slot[3]] = bAgg
-        val out = Array(1) { FloatArray(1) }
+        val out = FloatArray(1)
         @Suppress("UNCHECKED_CAST")
         interp.runForMultipleInputsOutputs(inputs as Array<Any>, mapOf(0 to out))
-        return out[0][0].toDouble()
+        return out[0].toDouble()
     }
 
     override fun score(items: List<PendingWindow>) = DoubleArray(items.size) { run(items[it].tensors) }
